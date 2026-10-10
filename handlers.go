@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -19,8 +18,6 @@ type createTodoRequest struct {
 	Priority string  `json:"priority"`
 	DueDate  *string `json:"due_date"`
 }
-
-var datePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
 var validPriorities = map[string]bool{
 	"low":    true,
@@ -60,10 +57,6 @@ func (h *Handler) createTodo(w http.ResponseWriter, r *http.Request) {
 
 	var dueDate *string
 	if req.DueDate != nil && *req.DueDate != "" {
-		if !datePattern.MatchString(*req.DueDate) {
-			writeError(w, http.StatusBadRequest, "due_date must be YYYY-MM-DD")
-			return
-		}
 		if _, err := time.Parse("2006-01-02", *req.DueDate); err != nil {
 			writeError(w, http.StatusBadRequest, "due_date must be YYYY-MM-DD")
 			return
