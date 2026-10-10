@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func newTestServer(t *testing.T) (*httptest.Server, string) {
+func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	db, err := openDB(dbPath)
@@ -19,11 +19,11 @@ func newTestServer(t *testing.T) (*httptest.Server, string) {
 	t.Cleanup(func() { db.Close() })
 	srv := httptest.NewServer(newMux(&Handler{DB: db}))
 	t.Cleanup(srv.Close)
-	return srv, dbPath
+	return srv
 }
 
 func TestHealthz(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv := newTestServer(t)
 	resp, err := http.Get(srv.URL + "/healthz")
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
@@ -45,7 +45,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestCreateAndListTodos(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv := newTestServer(t)
 
 	payload := `{"title":"Pay rent","priority":"high","due_date":"2026-10-15"}`
 	resp, err := http.Post(srv.URL+"/api/todos", "application/json", strings.NewReader(payload))
@@ -91,13 +91,29 @@ func TestCreateAndListTodos(t *testing.T) {
 	if len(todos) != 1 {
 		t.Fatalf("len(todos) = %d, want 1", len(todos))
 	}
-	if todos[0].ID != 1 || todos[0].Title != "Pay rent" {
-		t.Errorf("todos[0] = %+v, want id 1 Pay rent", todos[0])
+	got := todos[0]
+	if got.ID != 1 {
+		t.Errorf("id = %d, want 1", got.ID)
+	}
+	if got.Title != "Pay rent" {
+		t.Errorf("title = %q, want Pay rent", got.Title)
+	}
+	if got.Done {
+		t.Errorf("done = true, want false")
+	}
+	if got.Priority != "high" {
+		t.Errorf("priority = %q, want high", got.Priority)
+	}
+	if got.DueDate == nil || *got.DueDate != "2026-10-15" {
+		t.Errorf("due_date = %v, want 2026-10-15", got.DueDate)
+	}
+	if got.CreatedAt == "" || got.UpdatedAt == "" {
+		t.Errorf("timestamps = %q/%q, want non-empty", got.CreatedAt, got.UpdatedAt)
 	}
 }
 
 func TestCreateTodoDefaults(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv := newTestServer(t)
 	resp, err := http.Post(srv.URL+"/api/todos", "application/json", strings.NewReader(`{"title":"Milk"}`))
 	if err != nil {
 		t.Fatalf("POST: %v", err)
@@ -116,10 +132,32 @@ func TestCreateTodoDefaults(t *testing.T) {
 	if created.DueDate != nil {
 		t.Errorf("due_date = %v, want nil", created.DueDate)
 	}
+
+	listResp, err := http.Get(srv.URL + "/api/todos")
+	if err != nil {
+		t.Fatalf("GET /api/todos: %v", err)
+	}
+	defer listResp.Body.Close()
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("list status = %d, want 200", listResp.StatusCode)
+	}
+	var todos []Todo
+	if err := json.NewDecoder(listResp.Body).Decode(&todos); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(todos) != 1 {
+		t.Fatalf("len(todos) = %d, want 1", len(todos))
+	}
+	if todos[0].Priority != "medium" {
+		t.Errorf("listed priority = %q, want medium", todos[0].Priority)
+	}
+	if todos[0].DueDate != nil {
+		t.Errorf("listed due_date = %v, want null", todos[0].DueDate)
+	}
 }
 
 func TestCreateTodoValidation(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv := newTestServer(t)
 	cases := []struct {
 		name string
 		body string
@@ -181,7 +219,7 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 }
 
 func TestIndexServesHTML(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv := newTestServer(t)
 	resp, err := http.Get(srv.URL + "/")
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
