@@ -28,5 +28,4 @@ todos.db
 .DS_Store
 
 # Local planning docs (keep out of repo per owner request)
-.agents/PRDs/
 .agents/stories/
