@@ -717,4 +717,24 @@ func TestIndexServesHTML(t *testing.T) {
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Errorf("Content-Type = %q, want text/html", ct)
 	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	for _, want := range []string{
+		"<html",
+		"<form",
+		`id="title"`,
+		`maxlength="255"`,
+		`id="priority"`,
+		`value="low"`,
+		`value="medium"`,
+		`value="high"`,
+		`type="date"`,
+		`/api/todos`,
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("index.html body missing %q", want)
+		}
+	}
 }
