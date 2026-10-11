@@ -731,6 +731,11 @@ func TestIndexServesHTML(t *testing.T) {
 		`id="priority"`,
 		`type="date"`,
 		`/api/todos`,
+		`todo-toggle`,
+		`todo-delete`,
+		`/toggle`,
+		`method: "PATCH"`,
+		`method: "DELETE"`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("index.html body missing %q", want)
