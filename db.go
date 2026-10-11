@@ -80,7 +80,7 @@ func createTodo(db *sql.DB, title, priority string, dueDate *string) (Todo, erro
 }
 
 // listFilter is the validated set of query inputs for a list request. The zero
-// value means "all statuses, any priority, any text, newest first".
+// value means "all statuses, any priority, any text, oldest first".
 type listFilter struct {
 	Status   string // "all", "active", or "done"
 	Priority string // "" means any

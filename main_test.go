@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -580,18 +581,6 @@ func todoTitles(todos []Todo) []string {
 	return titles
 }
 
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func seedListFixture(t *testing.T, srv *httptest.Server) {
 	t.Helper()
 	createTestTodo(t, srv, `{"title":"Pay rent","priority":"high","due_date":"2026-10-15"}`)
@@ -624,7 +613,7 @@ func TestListTodosFilterAndSearch(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := todoTitles(listQuery(t, srv, tc.query))
-			if !equalStrings(got, tc.want) {
+			if !slices.Equal(got, tc.want) {
 				t.Errorf("titles = %v, want %v", got, tc.want)
 			}
 		})
@@ -647,7 +636,7 @@ func TestListTodosSort(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := todoTitles(listQuery(t, srv, tc.query))
-			if !equalStrings(got, tc.want) {
+			if !slices.Equal(got, tc.want) {
 				t.Errorf("titles = %v, want %v", got, tc.want)
 			}
 		})
@@ -670,11 +659,48 @@ func TestListTodosRejectsUnknownValues(t *testing.T) {
 func TestListTodosSearchTreatsWildcardsLiterally(t *testing.T) {
 	srv := newTestServer(t)
 	createTestTodo(t, srv, `{"title":"50% off"}`)
+	createTestTodo(t, srv, `{"title":"a_b"}`)
+	createTestTodo(t, srv, `{"title":"axb"}`)
 	createTestTodo(t, srv, `{"title":"Plain"}`)
 
-	got := todoTitles(listQuery(t, srv, "?q=%25"))
-	if !equalStrings(got, []string{"50% off"}) {
-		t.Errorf("titles = %v, want [50%% off]", got)
+	cases := []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{"percent is literal", "?q=%25", []string{"50% off"}},
+		{"underscore is literal", "?q=a_b", []string{"a_b"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := todoTitles(listQuery(t, srv, tc.query))
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("titles = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestListTodosSearchBindsQueryText(t *testing.T) {
+	srv := newTestServer(t)
+	createTestTodo(t, srv, `{"title":"O'Brien"}`)
+	createTestTodo(t, srv, `{"title":"Plain"}`)
+
+	cases := []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{"quote is matched literally", "?q=O%27Brien", []string{"O'Brien"}},
+		{"injection attempt matches nothing", "?q=%27%20OR%201%3D1%20--%20", []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := todoTitles(listQuery(t, srv, tc.query))
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("titles = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
