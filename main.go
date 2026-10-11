@@ -6,9 +6,21 @@ import (
 	"os"
 )
 
+// The container image re-declares the process's runtime interface as its own
+// literals; docker_test.go binds the Dockerfile to these owners so a rename on
+// either side fails the build instead of silently falling back to a default.
+const (
+	envPort   = "PORT"
+	envDBPath = "DB_PATH"
+)
+
+// indexFile is served relative to the process working directory, which the
+// image sets and populates.
+const indexFile = "static/index.html"
+
 func main() {
-	port := envOr("PORT", "8080")
-	dbPath := envOr("DB_PATH", "./todos.db")
+	port := envOr(envPort, "8080")
+	dbPath := envOr(envDBPath, "./todos.db")
 
 	db, err := openDB(dbPath)
 	if err != nil {
@@ -44,7 +56,7 @@ func newMux(h *Handler) *http.ServeMux {
 }
 
 func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, "static/index.html")
+	http.ServeFile(w, r, indexFile)
 }
 
 func envOr(key, fallback string) string {
