@@ -4,9 +4,304 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Todo</title>
+  <style>
+    :root {
+      --bg: #f5f5f4;
+      --card: #ffffff;
+      --ink: #1c1917;
+      --muted: #78716c;
+      --line: #e7e5e4;
+      --accent: #2563eb;
+      --danger: #b91c1c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 1rem;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+    }
+    main {
+      width: 100%;
+      max-width: 40rem;
+      margin: 0 auto;
+    }
+    h1 {
+      margin: 0 0 1rem;
+      font-size: 1.5rem;
+    }
+    form {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      align-items: flex-end;
+      padding: 1rem;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 0.5rem;
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .field-title { flex: 1 1 12rem; }
+    .field-priority { flex: 0 1 7rem; }
+    .field-due { flex: 0 1 9rem; }
+    input, select, button {
+      font: inherit;
+      padding: 0.5rem 0.6rem;
+      border: 1px solid var(--line);
+      border-radius: 0.375rem;
+      background: var(--card);
+      color: var(--ink);
+    }
+    input, select { width: 100%; }
+    button {
+      flex: 0 0 auto;
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #ffffff;
+      cursor: pointer;
+    }
+    button:hover { filter: brightness(1.05); }
+    .validation, .error {
+      flex-basis: 100%;
+      margin: 0;
+      font-size: 0.85rem;
+    }
+    .validation { color: var(--danger); }
+    .error {
+      padding: 0.6rem 0.75rem;
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      border-radius: 0.375rem;
+      color: var(--danger);
+    }
+    ul.todos {
+      list-style: none;
+      margin: 1rem 0 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    li.todo {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.65rem 0.75rem;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 0.5rem;
+    }
+    .todo-title { flex: 1 1 auto; overflow-wrap: anywhere; }
+    li.todo.done .todo-title { text-decoration: line-through; color: var(--muted); }
+    .badge {
+      flex: 0 0 auto;
+      padding: 0.15rem 0.5rem;
+      border-radius: 999px;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .badge-low { background: #e0f2fe; color: #075985; }
+    .badge-medium { background: #fef3c7; color: #92400e; }
+    .badge-high { background: #fee2e2; color: #991b1b; }
+    .due { flex: 0 0 auto; font-size: 0.8rem; color: var(--muted); }
+    .empty {
+      margin: 1rem 0 0;
+      padding: 1rem;
+      text-align: center;
+      color: var(--muted);
+      border: 1px dashed var(--line);
+      border-radius: 0.5rem;
+    }
+  </style>
 </head>
 <body>
-  <h1>Todo</h1>
-  <p>The API is available at <a href="/api/todos">/api/todos</a>.</p>
+  <main>
+    <h1>Todo</h1>
+
+    <p id="error" class="error" role="alert" hidden></p>
+
+    <form id="add-form" novalidate>
+      <label class="field field-title">
+        <span>Title</span>
+        <input id="title" name="title" type="text" maxlength="255" required
+               autocomplete="off" placeholder="What needs doing?">
+      </label>
+
+      <label class="field field-priority">
+        <span>Priority</span>
+        <select id="priority" name="priority">
+          <option value="low">Low</option>
+          <option value="medium" selected>Medium</option>
+          <option value="high">High</option>
+        </select>
+      </label>
+
+      <label class="field field-due">
+        <span>Due date</span>
+        <input id="due-date" name="due_date" type="date">
+      </label>
+
+      <button type="submit">Add</button>
+
+      <p id="validation" class="validation" role="alert" hidden></p>
+    </form>
+
+    <ul id="todos" class="todos"></ul>
+    <p id="empty" class="empty" hidden>No todos yet.</p>
+  </main>
+
+  <script>
+    (function () {
+      "use strict";
+
+      var form = document.getElementById("add-form");
+      var titleInput = document.getElementById("title");
+      var prioritySelect = document.getElementById("priority");
+      var dueInput = document.getElementById("due-date");
+      var list = document.getElementById("todos");
+      var empty = document.getElementById("empty");
+      var errorBanner = document.getElementById("error");
+      var validation = document.getElementById("validation");
+
+      var errorSource = null;
+
+      // The banner is shared by the load and add flows; only the flow that set
+      // it may clear it, so one operation's success never erases another's
+      // failure.
+      function showError(source, message) {
+        errorSource = source;
+        errorBanner.textContent = message;
+        errorBanner.hidden = false;
+      }
+
+      function clearError(source) {
+        if (errorSource !== source) {
+          return;
+        }
+        errorSource = null;
+        errorBanner.hidden = true;
+        errorBanner.textContent = "";
+      }
+
+      function showValidation(message) {
+        validation.textContent = message;
+        validation.hidden = false;
+      }
+
+      function clearValidation() {
+        validation.hidden = true;
+        validation.textContent = "";
+      }
+
+      function renderTodo(todo) {
+        var item = document.createElement("li");
+        item.className = "todo" + (todo.done ? " done" : "");
+
+        var title = document.createElement("span");
+        title.className = "todo-title";
+        title.textContent = todo.title;
+        item.appendChild(title);
+
+        var badge = document.createElement("span");
+        badge.className = "badge badge-" + todo.priority;
+        badge.textContent = todo.priority;
+        item.appendChild(badge);
+
+        if (todo.due_date) {
+          var due = document.createElement("span");
+          due.className = "due";
+          due.textContent = "Due " + todo.due_date;
+          item.appendChild(due);
+        }
+
+        return item;
+      }
+
+      function render(todos) {
+        list.replaceChildren();
+        if (!todos || todos.length === 0) {
+          empty.hidden = false;
+          return;
+        }
+        empty.hidden = true;
+        todos.forEach(function (todo) {
+          list.appendChild(renderTodo(todo));
+        });
+      }
+
+      function appendTodo(todo) {
+        empty.hidden = true;
+        list.appendChild(renderTodo(todo));
+      }
+
+      function loadTodos() {
+        return fetch("/api/todos")
+          .then(function (resp) {
+            if (!resp.ok) {
+              throw new Error("HTTP " + resp.status);
+            }
+            return resp.json();
+          })
+          .then(function (todos) {
+            clearError("load");
+            render(todos);
+          })
+          .catch(function () {
+            showError("load", "Could not load todos. Check that the server is running.");
+          });
+      }
+
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        var title = titleInput.value.trim();
+        if (title === "") {
+          showValidation("Enter a title before adding a todo.");
+          titleInput.focus();
+          return;
+        }
+        clearValidation();
+
+        var payload = { title: title, priority: prioritySelect.value };
+        if (dueInput.value) {
+          payload.due_date = dueInput.value;
+        }
+
+        fetch("/api/todos", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        })
+          .then(function (resp) {
+            if (!resp.ok) {
+              return resp.json().catch(function () {
+                return {};
+              }).then(function (body) {
+                throw new Error(body.error || "Could not add todo.");
+              });
+            }
+            return resp.json();
+          })
+          .then(function (todo) {
+            clearError("create");
+            form.reset();
+            titleInput.focus();
+            appendTodo(todo);
+          })
+          .catch(function (err) {
+            showError("create", err.message || "Could not add todo.");
+          });
+      });
+
+      loadTodos();
+    })();
+  </script>
 </body>
 </html>

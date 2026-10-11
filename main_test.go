@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -717,4 +718,67 @@ func TestIndexServesHTML(t *testing.T) {
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Errorf("Content-Type = %q, want text/html", ct)
 	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	page := string(body)
+	for _, want := range []string{
+		"<html",
+		"<form",
+		`id="title"`,
+		`maxlength="255"`,
+		`id="priority"`,
+		`type="date"`,
+		`/api/todos`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("index.html body missing %q", want)
+		}
+	}
+
+	// The served form and the server validator are separate hand-written
+	// declarations across a language boundary (the file is served verbatim, no
+	// build step), so bind them here: the options offered by the page must be
+	// exactly validPriorities, the selected one must be the server default, and
+	// every priority the page can render must have a badge style.
+	options := parsePriorityOptions(t, page)
+	for priority := range validPriorities {
+		if _, ok := options[priority]; !ok {
+			t.Errorf("priority option %q missing from index.html", priority)
+		}
+		if !strings.Contains(page, ".badge-"+priority) {
+			t.Errorf("index.html missing badge style for priority %q", priority)
+		}
+	}
+	for priority := range options {
+		if !validPriorities[priority] {
+			t.Errorf("index.html offers unknown priority %q", priority)
+		}
+	}
+	var selected []string
+	for priority, attrs := range options {
+		if strings.Contains(attrs, "selected") {
+			selected = append(selected, priority)
+		}
+	}
+	if len(selected) != 1 || selected[0] != defaultPriority {
+		t.Errorf("selected priority = %v, want exactly [%q]", selected, defaultPriority)
+	}
+}
+
+// parsePriorityOptions maps each <option value="..."> in the served page to its
+// remaining attributes so the test can compare the form's vocabulary against
+// validPriorities rather than restating it.
+func parsePriorityOptions(t *testing.T, page string) map[string]string {
+	t.Helper()
+	re := regexp.MustCompile(`<option value="([^"]+)"([^>]*)>`)
+	options := map[string]string{}
+	for _, m := range re.FindAllStringSubmatch(page, -1) {
+		options[m[1]] = m[2]
+	}
+	if len(options) == 0 {
+		t.Fatal("index.html contains no priority options")
+	}
+	return options
 }

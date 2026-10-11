@@ -28,10 +28,12 @@ type updateTodoRequest struct {
 	Done     bool    `json:"done"`
 }
 
+const defaultPriority = "medium"
+
 var validPriorities = map[string]bool{
-	"low":    true,
-	"medium": true,
-	"high":   true,
+	"low":           true,
+	defaultPriority: true,
+	"high":          true,
 }
 
 var validStatuses = map[string]bool{
@@ -144,7 +146,7 @@ func validateTodo(title, priority string, dueDate *string) (string, string, *str
 	}
 
 	if priority == "" {
-		priority = "medium"
+		priority = defaultPriority
 	}
 	if !validPriorities[priority] {
 		return "", "", nil, errors.New("priority must be one of low, medium, high")
