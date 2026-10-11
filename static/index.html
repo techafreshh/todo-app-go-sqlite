@@ -6,7 +6,6 @@
   <title>Todo</title>
   <style>
     :root {
-      color-scheme: light dark;
       --bg: #f5f5f4;
       --card: #ffffff;
       --ink: #1c1917;
@@ -172,12 +171,22 @@
       var errorBanner = document.getElementById("error");
       var validation = document.getElementById("validation");
 
-      function showError(message) {
+      var errorSource = null;
+
+      // The banner is shared by the load and add flows; only the flow that set
+      // it may clear it, so one operation's success never erases another's
+      // failure.
+      function showError(source, message) {
+        errorSource = source;
         errorBanner.textContent = message;
         errorBanner.hidden = false;
       }
 
-      function clearError() {
+      function clearError(source) {
+        if (errorSource !== source) {
+          return;
+        }
+        errorSource = null;
         errorBanner.hidden = true;
         errorBanner.textContent = "";
       }
@@ -228,6 +237,11 @@
         });
       }
 
+      function appendTodo(todo) {
+        empty.hidden = true;
+        list.appendChild(renderTodo(todo));
+      }
+
       function loadTodos() {
         return fetch("/api/todos")
           .then(function (resp) {
@@ -237,11 +251,11 @@
             return resp.json();
           })
           .then(function (todos) {
-            clearError();
+            clearError("load");
             render(todos);
           })
           .catch(function () {
-            showError("Could not load todos. Check that the server is running.");
+            showError("load", "Could not load todos. Check that the server is running.");
           });
       }
 
@@ -273,12 +287,16 @@
                 throw new Error(body.error || "Could not add todo.");
               });
             }
+            return resp.json();
+          })
+          .then(function (todo) {
+            clearError("create");
             form.reset();
             titleInput.focus();
-            return loadTodos();
+            appendTodo(todo);
           })
           .catch(function (err) {
-            showError(err.message || "Could not add todo.");
+            showError("create", err.message || "Could not add todo.");
           });
       });
 
