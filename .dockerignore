@@ -1,0 +1,34 @@
+# Version control metadata
+.git
+.gitignore
+
+# Local SQLite data (never baked into the image; /data is a volume)
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+todos.db
+data/
+
+# Build artifacts
+/server
+/todo-app-go-sqlite
+todo-app
+*.exe
+*.test
+*.out
+/vendor/
+
+# Docker build files
+Dockerfile
+.dockerignore
+.docker/
+
+# Planning and harness docs (not needed to build the binary)
+.agents/
+harness/
+MISSION.md
+
+# Env / OS
+.env
+.DS_Store
