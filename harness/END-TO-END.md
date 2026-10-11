@@ -21,6 +21,11 @@ not how to pass them.
    strikethrough and, after a reload, is still done. I click its delete button;
    the row disappears (and the empty state appears once the list is empty) and,
    after a reload, the todo is gone.
+7. **Overdue and Today labels** — with today fixed at a known local date, a
+   not-done todo whose `due_date` is before today shows a red `Overdue` badge, a
+   not-done todo due today shows an amber `Today` label, and a done todo with a
+   past due date shows neither (it keeps the plain due date). The comparison is
+   against the local calendar day, so it does not shift with the UTC offset.
 
 Additional edge-case journeys (malformed input, boundary values, restart
 abuse) exist as **private holdout scenarios** — deliberately outside this

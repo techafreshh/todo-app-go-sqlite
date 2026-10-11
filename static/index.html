@@ -115,7 +115,7 @@
       color: var(--danger);
     }
     .todo-delete:hover { border-color: var(--danger); filter: none; }
-    .badge {
+    .badge, .due-overdue, .due-today {
       flex: 0 0 auto;
       padding: 0.15rem 0.5rem;
       border-radius: 999px;
@@ -127,14 +127,6 @@
     .badge-medium { background: #fef3c7; color: #92400e; }
     .badge-high { background: #fee2e2; color: #991b1b; }
     .due { flex: 0 0 auto; font-size: 0.8rem; color: var(--muted); }
-    .due-overdue, .due-today {
-      flex: 0 0 auto;
-      padding: 0.15rem 0.5rem;
-      border-radius: 999px;
-      font-size: 0.72rem;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-    }
     .due-overdue { background: #fee2e2; color: #991b1b; }
     .due-today { background: #fef3c7; color: #92400e; }
     .todo-edit {
@@ -515,10 +507,17 @@
           })
           .then(function (updated) {
             clearError(source);
+            // An edit can change a filter-keyed field (title or priority), so
+            // reload the filtered list instead of mutating the row in place.
+            if (filtersActive()) {
+              return loadTodos();
+            }
             replaceRow(updated, item);
           })
           .catch(function (err) {
             showError(source, err.message || "Could not save todo.");
+          })
+          .finally(function () {
             setRowBusy(item, false);
           });
       }
@@ -534,7 +533,9 @@
             clearError(source);
             // A toggle can move the row out of the active status filter, so
             // reload the filtered list instead of mutating the row in place.
-            loadTodos();
+            // Returning it keeps the row busy until the reconciled list renders,
+            // so an edit cannot read this row's pre-toggle done.
+            return loadTodos();
           })
           .catch(function (err) {
             checkbox.checked = todo.done;

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -707,22 +708,10 @@ func TestListTodosSearchBindsQueryText(t *testing.T) {
 
 func TestIndexServesHTML(t *testing.T) {
 	srv := newTestServer(t)
-	resp, err := http.Get(srv.URL + "/")
-	if err != nil {
-		t.Fatalf("GET /: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
+	resp, page := getIndex(t, srv)
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Errorf("Content-Type = %q, want text/html", ct)
 	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read body: %v", err)
-	}
-	page := string(body)
 	for _, want := range []string{
 		"<html",
 		"<form",
@@ -737,7 +726,6 @@ func TestIndexServesHTML(t *testing.T) {
 		`method: "PATCH"`,
 		`method: "DELETE"`,
 		`todo-edit`,
-		`method: "PUT"`,
 		`Overdue`,
 		`Today`,
 		`id="search"`,
@@ -783,6 +771,126 @@ func TestIndexServesHTML(t *testing.T) {
 	assertSingleSelected(t, parseSelectOptions(t, page, "priority"), "selected", defaultPriority, "priority")
 	assertSingleSelected(t, parseSelectOptions(t, page, "sort"), "selected", defaultSort, "sort")
 	assertSingleSelected(t, parseDataStatus(t, page), `aria-pressed="true"`, defaultStatus, "status")
+}
+
+// getIndex fetches the served page once for the conformance tests that read it
+// as text.
+func getIndex(t *testing.T, srv *httptest.Server) (*http.Response, string) {
+	t.Helper()
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return resp, string(body)
+}
+
+// TestIndexBindsEditContract checks the edit flow's client copy of the
+// server-owned wire contract against its owners: the request-body keys come
+// from updateTodoRequest's json tags, the fields it reads from Todo's, and the
+// route/verb from the mux's route constant. Renaming either side fails here
+// instead of silently dropping a field or calling the wrong route.
+func TestIndexBindsEditContract(t *testing.T) {
+	srv := newTestServer(t)
+	_, page := getIndex(t, srv)
+
+	bodyKeys := payloadKeys(page)
+	for _, tag := range jsonTags(t, updateTodoRequest{}) {
+		if !bodyKeys[tag] {
+			t.Errorf("index.html edit payload missing updateTodoRequest key %q", tag)
+		}
+	}
+
+	todoTags := map[string]bool{}
+	for _, tag := range jsonTags(t, Todo{}) {
+		todoTags[tag] = true
+	}
+	for _, key := range todoReadKeys(page) {
+		if !todoTags[key] {
+			t.Errorf("index.html reads todo.%s, which is not a Todo json tag", key)
+		}
+	}
+
+	method, path := splitRoute(t, routeUpdateTodo)
+	prefix := strings.TrimSuffix(path, "{id}")
+	// The edit flow is the only fetch with a JSON body to /api/todos/<id>;
+	// capture its declared verb and path so they can be checked against the
+	// route owner rather than merely appearing somewhere in the page.
+	updateFetch := regexp.MustCompile(`fetch\("([^"]+)" \+ todo\.id, \{\s*method: "([A-Z]+)",\s*headers:`)
+	m := updateFetch.FindStringSubmatch(page)
+	if m == nil {
+		t.Fatal("index.html has no update fetch with a JSON body")
+	}
+	if m[2] != method {
+		t.Errorf("index.html update verb = %q, want %q", m[2], method)
+	}
+	if m[1] != prefix {
+		t.Errorf("index.html update path = %q, want %q", m[1], prefix)
+	}
+}
+
+// jsonTags returns the wire keys a request or response struct declares, read
+// from its struct tags so the served page's client copy can be compared to its
+// owner.
+func jsonTags(t *testing.T, sample any) []string {
+	t.Helper()
+	typ := reflect.TypeOf(sample)
+	tags := make([]string, 0, typ.NumField())
+	for i := 0; i < typ.NumField(); i++ {
+		name := strings.Split(typ.Field(i).Tag.Get("json"), ",")[0]
+		if name == "" || name == "-" {
+			t.Fatalf("%s field %s has no usable json tag", typ.Name(), typ.Field(i).Name)
+		}
+		tags = append(tags, name)
+	}
+	return tags
+}
+
+// payloadKeys returns every key the page sets on a request `payload` object,
+// whether in an object literal or a later property assignment.
+func payloadKeys(page string) map[string]bool {
+	keys := map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?s)var payload = \{(.*?)\}`).FindAllStringSubmatch(page, -1) {
+		for _, k := range regexp.MustCompile(`([A-Za-z_]+)\s*:`).FindAllStringSubmatch(m[1], -1) {
+			keys[k[1]] = true
+		}
+	}
+	for _, m := range regexp.MustCompile(`payload\.([A-Za-z_]+)\s*=`).FindAllStringSubmatch(page, -1) {
+		keys[m[1]] = true
+	}
+	return keys
+}
+
+// todoReadKeys returns the distinct fields the page reads from a todo object,
+// whether it came from the list or a write response.
+func todoReadKeys(page string) []string {
+	seen := map[string]bool{}
+	var keys []string
+	for _, m := range regexp.MustCompile(`todo\.([A-Za-z_]+)`).FindAllStringSubmatch(page, -1) {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			keys = append(keys, m[1])
+		}
+	}
+	return keys
+}
+
+// splitRoute splits a mux pattern like "PUT /api/todos/{id}" into its verb and
+// path.
+func splitRoute(t *testing.T, route string) (method, path string) {
+	t.Helper()
+	parts := strings.SplitN(route, " ", 2)
+	if len(parts) != 2 {
+		t.Fatalf("route %q is not \"METHOD /path\"", route)
+	}
+	return parts[0], parts[1]
 }
 
 // parseDataStatus maps each status button's data-status value to the rest of

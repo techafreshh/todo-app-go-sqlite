@@ -26,12 +26,17 @@ func main() {
 	}
 }
 
+// routeUpdateTodo owns the edit wire contract. The served page re-declares the
+// same verb and path in its client fetch, and the conformance test binds the
+// page to this constant.
+const routeUpdateTodo = "PUT /api/todos/{id}"
+
 func newMux(h *Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("POST /api/todos", h.createTodo)
 	mux.HandleFunc("GET /api/todos", h.listTodos)
-	mux.HandleFunc("PUT /api/todos/{id}", h.updateTodo)
+	mux.HandleFunc(routeUpdateTodo, h.updateTodo)
 	mux.HandleFunc("PATCH /api/todos/{id}/toggle", h.toggleTodo)
 	mux.HandleFunc("DELETE /api/todos/{id}", h.deleteTodo)
 	mux.HandleFunc("GET /{$}", h.index)
