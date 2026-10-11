@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -78,11 +79,42 @@ func createTodo(db *sql.DB, title, priority string, dueDate *string) (Todo, erro
 	}, nil
 }
 
-func listTodos(db *sql.DB) ([]Todo, error) {
-	rows, err := db.Query(
-		`SELECT id, title, done, priority, due_date, created_at, updated_at
-		 FROM todos ORDER BY id`,
+// listFilter is the validated set of query inputs for a list request. The zero
+// value means "all statuses, any priority, any text, oldest first".
+type listFilter struct {
+	Status   string // "all", "active", or "done"
+	Priority string // "" means any
+	Query    string // "" means any; case-insensitive substring of title
+	Sort     string // "due", "created", or "priority"
+}
+
+func listTodos(db *sql.DB, filter listFilter) ([]Todo, error) {
+	var (
+		clauses []string
+		args    []any
 	)
+	switch filter.Status {
+	case "active":
+		clauses = append(clauses, "done = 0")
+	case "done":
+		clauses = append(clauses, "done = 1")
+	}
+	if filter.Priority != "" {
+		clauses = append(clauses, "priority = ?")
+		args = append(args, filter.Priority)
+	}
+	if filter.Query != "" {
+		clauses = append(clauses, `title LIKE ? ESCAPE '\'`)
+		args = append(args, "%"+escapeLike(filter.Query)+"%")
+	}
+
+	query := `SELECT id, title, done, priority, due_date, created_at, updated_at FROM todos`
+	if len(clauses) > 0 {
+		query += " WHERE " + strings.Join(clauses, " AND ")
+	}
+	query += " ORDER BY " + orderByClause(filter.Sort)
+
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -97,6 +129,25 @@ func listTodos(db *sql.DB) ([]Todo, error) {
 		todos = append(todos, t)
 	}
 	return todos, rows.Err()
+}
+
+// orderByClause maps a sort key to an ORDER BY list. Every case ends in id so
+// rows sharing a sort key (created_at has second precision) stay stable.
+func orderByClause(sort string) string {
+	switch sort {
+	case "due":
+		return "due_date IS NULL, due_date, id"
+	case "priority":
+		return "CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END, id"
+	default:
+		return "created_at, id"
+	}
+}
+
+// escapeLike quotes the LIKE metacharacters so a query matches the literal text
+// a user typed rather than treating % and _ as wildcards.
+func escapeLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
 // rowScanner is satisfied by both *sql.Row and *sql.Rows.
