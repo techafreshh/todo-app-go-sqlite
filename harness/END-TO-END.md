@@ -14,6 +14,9 @@ not how to pass them.
    an id; `GET /api/todos` contains it.
 4. **Persistence** — I add a todo, restart the app, and the todo is still
    there (SQLite file via `DB_PATH`).
+5. **Empty-title validation** — I submit the add form with an empty title, and
+   again with only whitespace; the page shows the inline validation message and
+   sends no `POST /api/todos` request, and the fetch-error banner stays hidden.
 
 Additional edge-case journeys (malformed input, boundary values, restart
 abuse) exist as **private holdout scenarios** — deliberately outside this
