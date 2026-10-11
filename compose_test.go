@@ -10,13 +10,19 @@ import (
 // compose.yaml is the deployment contract that feeds the image's runtime
 // interface into a running service. This test reads it and binds it to the env
 // keys main.go owns and the DB path and volume the Dockerfile declares, so a
-// rename or a retargeted mount fails here instead of silently launching the
-// container with a default DB path or writing the database outside the named
-// volume (PRD §8, §14.5).
+// rename, a retargeted mount, a non-persistent volume, or an added service or
+// credential source fails here instead of silently launching the container with
+// a default DB path, writing the database outside the named volume, or reaching
+// an external service (PRD §8, §9, §14.5).
 func TestComposeBindsRuntimeContract(t *testing.T) {
 	lines := composeLines(readCompose(t))
 
 	services := composeBlock(t, lines, "services:", 0)
+	// The deployment is one self-contained service; a sibling service is either
+	// an unbound second process or an external dependency (PRD §9).
+	if names := composeChildKeys(services, 2); len(names) != 1 || names[0] != "todo:" {
+		t.Errorf("compose services = %v, want exactly [todo:]", names)
+	}
 	todo := composeBlock(t, services, "todo:", 2)
 
 	df := readDockerfile(t)
@@ -36,13 +42,24 @@ func TestComposeBindsRuntimeContract(t *testing.T) {
 	if envs[envDBPath] != imageEnvs[envDBPath] {
 		t.Errorf("compose DB_PATH %s != image DB_PATH %s", envs[envDBPath], imageEnvs[envDBPath])
 	}
-
-	// The published port must map the port the server listens on.
-	if port := envs[envPort]; port != "" {
-		ports := composeList(t, composeBlock(t, todo, "ports:", 4))
-		if want := port + ":" + port; len(ports) != 1 || ports[0] != want {
-			t.Errorf("compose ports = %v, want [%s]", ports, want)
+	// A credential file, secret, or external config would inject state the
+	// single-user, no-auth service must not read (PRD §9).
+	for _, key := range []string{"env_file:", "secrets:", "configs:"} {
+		if composeHasKey(todo, key, 4) {
+			t.Errorf("compose service todo declares %s, which injects credentials or external config", key)
 		}
+	}
+
+	// The published port must map the port the server actually listens on.
+	// main.go falls back to defaultPort when PORT is unset or empty, so an
+	// empty PORT with a mismatched mapping would leave the service unreachable.
+	listenPort := envs[envPort]
+	if listenPort == "" {
+		listenPort = defaultPort
+	}
+	ports := composeList(t, composeBlock(t, todo, "ports:", 4))
+	if want := listenPort + ":" + listenPort; len(ports) != 1 || ports[0] != want {
+		t.Errorf("compose ports = %v, want [%s]", ports, want)
 	}
 
 	// The DB directory must be mounted from the named volume, never a bind
@@ -60,8 +77,21 @@ func TestComposeBindsRuntimeContract(t *testing.T) {
 		t.Errorf("compose build = %q, want . (the existing Dockerfile)", got)
 	}
 
-	if !composeHasKey(composeBlock(t, lines, "volumes:", 0), "todo-data:", 2) {
-		t.Error("compose does not declare the top-level named volume todo-data")
+	// The named volume must be backed by the persistent local driver; a tmpfs
+	// or other driver drops the DB on down/up (PRD §14.5).
+	vol := composeBlock(t, lines, "volumes:", 0)
+	if !composeHasKey(vol, "todo-data:", 2) {
+		t.Fatal("compose does not declare the top-level named volume todo-data")
+	}
+	for _, l := range composeBlock(t, vol, "todo-data:", 2) {
+		if strings.Contains(l.text, "tmpfs") {
+			t.Errorf("compose volume todo-data uses tmpfs, which does not persist: %q", l.text)
+		}
+		if l.indent == 4 && strings.HasPrefix(l.text, "driver:") {
+			if d := strings.TrimSpace(strings.TrimPrefix(l.text, "driver:")); d != "local" {
+				t.Errorf("compose volume todo-data driver = %q, want local (persistent)", d)
+			}
+		}
 	}
 }
 
@@ -97,10 +127,13 @@ func composeLines(s string) []yamlLine {
 	return out
 }
 
-// composeBlock returns the lines nested under the first line whose text and
-// indentation match header. The block ends at the next line at or above it.
+// composeBlock returns the lines nested under the single line whose text and
+// indentation match header. The block ends at the next line at or above it. A
+// second matching header is a duplicate key: Compose rejects it, but a
+// first-match walk would silently read only one and pass an invalid file.
 func composeBlock(t *testing.T, lines []yamlLine, header string, indent int) []yamlLine {
 	t.Helper()
+	var matches [][]yamlLine
 	for i, l := range lines {
 		if l.text != header || l.indent != indent {
 			continue
@@ -112,10 +145,29 @@ func composeBlock(t *testing.T, lines []yamlLine, header string, indent int) []y
 			}
 			out = append(out, n)
 		}
-		return out
+		matches = append(matches, out)
 	}
-	t.Fatalf("compose.yaml: no %q block at indent %d", header, indent)
+	switch len(matches) {
+	case 0:
+		t.Fatalf("compose.yaml: no %q block at indent %d", header, indent)
+	case 1:
+		return matches[0]
+	default:
+		t.Fatalf("compose.yaml: %q block at indent %d appears %d times", header, indent, len(matches))
+	}
 	return nil
+}
+
+// composeChildKeys returns the mapping keys declared directly under a block at
+// the given indentation.
+func composeChildKeys(block []yamlLine, indent int) []string {
+	var out []string
+	for _, l := range block {
+		if l.indent == indent && strings.HasSuffix(l.text, ":") {
+			out = append(out, l.text)
+		}
+	}
+	return out
 }
 
 func composeEnv(t *testing.T, block []yamlLine) map[string]string {
@@ -154,9 +206,12 @@ func composeScalar(t *testing.T, block []yamlLine, key string, indent int) strin
 	return ""
 }
 
+// composeHasKey reports whether a block declares a mapping key at the given
+// indentation. It matches the key prefix so an inline value (env_file: .env) is
+// found as well as a nested block (secrets:).
 func composeHasKey(block []yamlLine, key string, indent int) bool {
 	for _, l := range block {
-		if l.indent == indent && l.text == key {
+		if l.indent == indent && strings.HasPrefix(l.text, key) {
 			return true
 		}
 	}
