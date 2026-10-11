@@ -34,6 +34,18 @@ var validPriorities = map[string]bool{
 	"high":   true,
 }
 
+var validStatuses = map[string]bool{
+	"all":    true,
+	"active": true,
+	"done":   true,
+}
+
+var validSorts = map[string]bool{
+	"due":      true,
+	"created":  true,
+	"priority": true,
+}
+
 func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -158,12 +170,47 @@ func parseID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 }
 
 func (h *Handler) listTodos(w http.ResponseWriter, r *http.Request) {
-	todos, err := listTodos(h.DB)
+	filter, err := parseListFilter(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	todos, err := listTodos(h.DB, filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list todos")
 		return
 	}
 	writeJSON(w, http.StatusOK, todos)
+}
+
+// parseListFilter validates the list query parameters at the HTTP boundary.
+// Absent or empty parameters fall back to the documented defaults; a supplied
+// value outside the allowed set is rejected so bad input never reaches SQL.
+func parseListFilter(r *http.Request) (listFilter, error) {
+	q := r.URL.Query()
+	filter := listFilter{Status: "all", Sort: "created"}
+
+	if v := q.Get("status"); v != "" {
+		if !validStatuses[v] {
+			return listFilter{}, errors.New("status must be one of all, active, done")
+		}
+		filter.Status = v
+	}
+	if v := q.Get("priority"); v != "" {
+		if !validPriorities[v] {
+			return listFilter{}, errors.New("priority must be one of low, medium, high")
+		}
+		filter.Priority = v
+	}
+	if v := q.Get("sort"); v != "" {
+		if !validSorts[v] {
+			return listFilter{}, errors.New("sort must be one of due, created, priority")
+		}
+		filter.Sort = v
+	}
+	filter.Query = strings.TrimSpace(q.Get("q"))
+	return filter, nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
