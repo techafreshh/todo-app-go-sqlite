@@ -736,6 +736,10 @@ func TestIndexServesHTML(t *testing.T) {
 		`/toggle`,
 		`method: "PATCH"`,
 		`method: "DELETE"`,
+		`todo-edit`,
+		`method: "PUT"`,
+		`Overdue`,
+		`Today`,
 		`id="search"`,
 		`id="filter-priority"`,
 		`id="sort"`,
@@ -765,6 +769,12 @@ func TestIndexServesHTML(t *testing.T) {
 	for priority := range validPriorities {
 		if !strings.Contains(page, ".badge-"+priority) {
 			t.Errorf("index.html missing badge style for priority %q", priority)
+		}
+	}
+
+	for _, cls := range []string{".due-overdue", ".due-today"} {
+		if !strings.Contains(page, cls) {
+			t.Errorf("index.html missing due-label style %q", cls)
 		}
 	}
 
