@@ -17,6 +17,10 @@ not how to pass them.
 5. **Empty-title validation** — I submit the add form with an empty title, and
    again with only whitespace; the page shows the inline validation message and
    sends no `POST /api/todos` request, and the fetch-error banner stays hidden.
+6. **Toggle and delete** — I add a todo; I click its checkbox; the row shows a
+   strikethrough and, after a reload, is still done. I click its delete button;
+   the row disappears (and the empty state appears once the list is empty) and,
+   after a reload, the todo is gone.
 
 Additional edge-case journeys (malformed input, boundary values, restart
 abuse) exist as **private holdout scenarios** — deliberately outside this
