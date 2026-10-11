@@ -90,26 +90,48 @@ func listTodos(db *sql.DB) ([]Todo, error) {
 
 	todos := []Todo{}
 	for rows.Next() {
-		var (
-			t       Todo
-			done    int
-			dueDate sql.NullString
-		)
-		if err := rows.Scan(&t.ID, &t.Title, &done, &t.Priority, &dueDate, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		t, err := scanTodo(rows)
+		if err != nil {
 			return nil, err
-		}
-		t.Done = done != 0
-		if dueDate.Valid {
-			t.DueDate = &dueDate.String
 		}
 		todos = append(todos, t)
 	}
 	return todos, rows.Err()
 }
 
+// rowScanner is satisfied by both *sql.Row and *sql.Rows.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanTodo reads the full todo column set into a Todo. Both listTodos and
+// toggleTodo read the same columns, so the persisted-representation mapping
+// lives here once.
+func scanTodo(row rowScanner) (Todo, error) {
+	var (
+		t       Todo
+		done    int
+		dueDate sql.NullString
+	)
+	if err := row.Scan(&t.ID, &t.Title, &done, &t.Priority, &dueDate, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		return Todo{}, err
+	}
+	t.Done = done != 0
+	if dueDate.Valid {
+		t.DueDate = &dueDate.String
+	}
+	return t, nil
+}
+
 func updateTodo(db *sql.DB, id int64, title, priority string, dueDate *string, done bool) (Todo, error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return Todo{}, err
+	}
+	defer tx.Rollback()
+
 	var createdAt, previousUpdatedAt string
-	err := db.QueryRow(`SELECT created_at, updated_at FROM todos WHERE id = ?`, id).Scan(&createdAt, &previousUpdatedAt)
+	err = tx.QueryRow(`SELECT created_at, updated_at FROM todos WHERE id = ?`, id).Scan(&createdAt, &previousUpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Todo{}, errNotFound
 	}
@@ -117,11 +139,18 @@ func updateTodo(db *sql.DB, id int64, title, priority string, dueDate *string, d
 		return Todo{}, err
 	}
 
-	updatedAt := nextTimestamp(createdAt, previousUpdatedAt)
-	if _, err := db.Exec(
+	updatedAt := nextTimestamp(previousUpdatedAt)
+	res, err := tx.Exec(
 		`UPDATE todos SET title = ?, priority = ?, due_date = ?, done = ?, updated_at = ? WHERE id = ?`,
 		title, priority, dueDate, done, updatedAt, id,
-	); err != nil {
+	)
+	if err != nil {
+		return Todo{}, err
+	}
+	if err := requireRowAffected(res); err != nil {
+		return Todo{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return Todo{}, err
 	}
 	return Todo{
@@ -136,15 +165,15 @@ func updateTodo(db *sql.DB, id int64, title, priority string, dueDate *string, d
 }
 
 func toggleTodo(db *sql.DB, id int64) (Todo, error) {
-	var (
-		t         Todo
-		done      int
-		dueDate   sql.NullString
-		createdAt string
-	)
-	err := db.QueryRow(
+	tx, err := db.Begin()
+	if err != nil {
+		return Todo{}, err
+	}
+	defer tx.Rollback()
+
+	t, err := scanTodo(tx.QueryRow(
 		`SELECT id, title, done, priority, due_date, created_at, updated_at FROM todos WHERE id = ?`, id,
-	).Scan(&t.ID, &t.Title, &done, &t.Priority, &dueDate, &createdAt, &t.UpdatedAt)
+	))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Todo{}, errNotFound
 	}
@@ -152,23 +181,25 @@ func toggleTodo(db *sql.DB, id int64) (Todo, error) {
 		return Todo{}, err
 	}
 
-	t.CreatedAt = createdAt
-	t.Done = done == 0
-	if dueDate.Valid {
-		t.DueDate = &dueDate.String
+	t.Done = !t.Done
+	t.UpdatedAt = nextTimestamp(t.UpdatedAt)
+	res, err := tx.Exec(`UPDATE todos SET done = ?, updated_at = ? WHERE id = ?`, t.Done, t.UpdatedAt, id)
+	if err != nil {
+		return Todo{}, err
 	}
-	t.UpdatedAt = nextTimestamp(createdAt, t.UpdatedAt)
-	if _, err := db.Exec(`UPDATE todos SET done = ?, updated_at = ? WHERE id = ?`, t.Done, t.UpdatedAt, id); err != nil {
+	if err := requireRowAffected(res); err != nil {
+		return Todo{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return Todo{}, err
 	}
 	return t, nil
 }
 
-func deleteTodo(db *sql.DB, id int64) error {
-	res, err := db.Exec(`DELETE FROM todos WHERE id = ?`, id)
-	if err != nil {
-		return err
-	}
+// requireRowAffected maps a write that matched no row to errNotFound, so a row
+// that vanished between the read and the write is reported as missing rather
+// than a phantom success.
+func requireRowAffected(res sql.Result) error {
 	n, err := res.RowsAffected()
 	if err != nil {
 		return err
@@ -179,19 +210,25 @@ func deleteTodo(db *sql.DB, id int64) error {
 	return nil
 }
 
+func deleteTodo(db *sql.DB, id int64) error {
+	res, err := db.Exec(`DELETE FROM todos WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	return requireRowAffected(res)
+}
+
 func nowTimestamp() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
-// nextTimestamp returns a write timestamp strictly later than every previous
-// timestamp given. The stored format has second precision, so a write within the
-// same second as a prior one must be bumped to keep updated_at strictly newer.
-func nextTimestamp(previous ...string) string {
+// nextTimestamp returns a write timestamp strictly later than the previous
+// updated_at. The stored format has second precision, so a write within the same
+// second as the previous one is bumped to keep updated_at strictly newer.
+func nextTimestamp(previous string) string {
 	now := time.Now().UTC().Truncate(time.Second)
-	for _, ts := range previous {
-		if prev, err := time.Parse(time.RFC3339, ts); err == nil && !now.After(prev) {
-			now = prev.Add(time.Second)
-		}
+	if prev, err := time.Parse(time.RFC3339, previous); err == nil && !now.After(prev) {
+		now = prev.Add(time.Second)
 	}
 	return now.Format(time.RFC3339)
 }
