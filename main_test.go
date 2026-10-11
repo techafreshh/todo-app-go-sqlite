@@ -50,6 +50,43 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+// The mux emits its own plain-text 404/405 for a route or method it does not
+// declare; the server must rewrite those into the documented JSON error shape
+// without disturbing the declared routes (issue #10: all API error responses are
+// JSON with the correct status).
+func TestUnmatchedRouteAndMethodReturnJSONErrors(t *testing.T) {
+	srv := newTestServer(t)
+
+	cases := []struct {
+		name       string
+		method     string
+		path       string
+		wantStatus int
+		wantAllow  []string
+	}{
+		{"unknown route", http.MethodGet, "/api/nope", http.StatusNotFound, nil},
+		{"wrong method on collection", http.MethodDelete, "/api/todos", http.StatusMethodNotAllowed, []string{"GET", "POST"}},
+		{"wrong method on item", http.MethodGet, "/api/todos/1", http.StatusMethodNotAllowed, []string{"PUT", "DELETE"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doRequest(t, tc.method, srv.URL+tc.path, "")
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.wantStatus)
+			}
+			if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+				t.Errorf("Content-Type = %q, want application/json", ct)
+			}
+			for _, method := range tc.wantAllow {
+				if allow := resp.Header.Get("Allow"); !strings.Contains(allow, method) {
+					t.Errorf("Allow = %q, want it to include %s", allow, method)
+				}
+			}
+			decodeError(t, resp)
+		})
+	}
+}
+
 func TestCreateAndListTodos(t *testing.T) {
 	srv := newTestServer(t)
 

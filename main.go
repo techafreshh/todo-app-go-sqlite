@@ -47,7 +47,7 @@ func main() {
 // page to this constant.
 const routeUpdateTodo = "PUT /api/todos/{id}"
 
-func newMux(h *Handler) *http.ServeMux {
+func newMux(h *Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("POST /api/todos", h.createTodo)
@@ -56,7 +56,40 @@ func newMux(h *Handler) *http.ServeMux {
 	mux.HandleFunc("PATCH /api/todos/{id}/toggle", h.toggleTodo)
 	mux.HandleFunc("DELETE /api/todos/{id}", h.deleteTodo)
 	mux.HandleFunc("GET /{$}", h.index)
-	return mux
+	return jsonErrorResponses(mux)
+}
+
+// jsonErrorResponses rewrites the plain-text 404 and 405 bodies ServeMux writes
+// for an unmatched route or a wrong method into the documented JSON error shape,
+// preserving the status and the Allow header it sets. ServeMux emits those
+// responses itself, before any handler runs, so the fallback has to sit outside
+// it; handler responses set their own Content-Type and pass through untouched.
+func jsonErrorResponses(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(&jsonErrorWriter{ResponseWriter: w}, r)
+	})
+}
+
+type jsonErrorWriter struct {
+	http.ResponseWriter
+	replaced bool
+}
+
+func (w *jsonErrorWriter) WriteHeader(status int) {
+	if !w.replaced && w.Header().Get("Content-Type") == "text/plain; charset=utf-8" &&
+		(status == http.StatusNotFound || status == http.StatusMethodNotAllowed) {
+		w.replaced = true
+		writeError(w.ResponseWriter, status, http.StatusText(status))
+		return
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *jsonErrorWriter) Write(b []byte) (int, error) {
+	if w.replaced {
+		return len(b), nil
+	}
+	return w.ResponseWriter.Write(b)
 }
 
 func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
