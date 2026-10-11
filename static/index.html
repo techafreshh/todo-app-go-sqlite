@@ -135,6 +135,40 @@
       border: 1px dashed var(--line);
       border-radius: 0.5rem;
     }
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      align-items: flex-end;
+      margin-top: 1rem;
+      padding: 1rem;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 0.5rem;
+    }
+    .field-search { flex: 1 1 12rem; }
+    .field-filter-priority { flex: 0 1 7rem; }
+    .field-sort { flex: 0 1 9rem; }
+    .segmented {
+      display: flex;
+      flex: 0 0 auto;
+      border: 1px solid var(--line);
+      border-radius: 0.375rem;
+      overflow: hidden;
+    }
+    .segment {
+      border: 0;
+      border-radius: 0;
+      background: var(--card);
+      color: var(--ink);
+    }
+    .segment + .segment { border-left: 1px solid var(--line); }
+    .segment:hover { filter: none; background: var(--bg); }
+    .segment.active,
+    .segment.active:hover {
+      background: var(--accent);
+      color: #ffffff;
+    }
   </style>
 </head>
 <body>
@@ -169,6 +203,38 @@
       <p id="validation" class="validation" role="alert" hidden></p>
     </form>
 
+    <div class="filters">
+      <div class="segmented" role="group" aria-label="Status">
+        <button type="button" class="segment active" data-status="all" aria-pressed="true">All</button>
+        <button type="button" class="segment" data-status="active" aria-pressed="false">Active</button>
+        <button type="button" class="segment" data-status="done" aria-pressed="false">Done</button>
+      </div>
+
+      <label class="field field-search">
+        <span>Search</span>
+        <input id="search" type="search" autocomplete="off" placeholder="Search titles">
+      </label>
+
+      <label class="field field-filter-priority">
+        <span>Priority</span>
+        <select id="filter-priority">
+          <option value="">Any</option>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+        </select>
+      </label>
+
+      <label class="field field-sort">
+        <span>Sort</span>
+        <select id="sort">
+          <option value="created" selected>Created</option>
+          <option value="due">Due date</option>
+          <option value="priority">Priority</option>
+        </select>
+      </label>
+    </div>
+
     <ul id="todos" class="todos"></ul>
     <p id="empty" class="empty" hidden>No todos yet.</p>
   </main>
@@ -185,6 +251,21 @@
       var empty = document.getElementById("empty");
       var errorBanner = document.getElementById("error");
       var validation = document.getElementById("validation");
+      var statusButtons = document.querySelectorAll(".segment");
+      var searchInput = document.getElementById("search");
+      var filterPrioritySelect = document.getElementById("filter-priority");
+      var sortSelect = document.getElementById("sort");
+
+      var SEARCH_DEBOUNCE_MS = 200;
+
+      // Client filter state maps one-to-one to the list API's query parameters;
+      // listURL sends only the values that differ from the API defaults.
+      var filters = {
+        status: "all",
+        q: "",
+        priority: "",
+        sort: "created"
+      };
 
       var errorSource = null;
 
@@ -320,9 +401,7 @@
           .then(function () {
             clearError(source);
             item.remove();
-            if (list.children.length === 0) {
-              empty.hidden = false;
-            }
+            syncEmptyState();
           })
           .catch(function (err) {
             showError(source, err.message || "Could not delete todo.");
@@ -336,23 +415,49 @@
 
       function render(todos) {
         list.replaceChildren();
-        if (!todos || todos.length === 0) {
-          empty.hidden = false;
-          return;
-        }
-        empty.hidden = true;
         todos.forEach(function (todo) {
           list.appendChild(renderTodo(todo));
         });
+        syncEmptyState();
       }
 
-      function appendTodo(todo) {
-        empty.hidden = true;
-        list.appendChild(renderTodo(todo));
+      function filtersActive() {
+        return filters.status !== "all" || filters.priority !== "" || filters.q !== "";
+      }
+
+      // The empty list has two meanings: nothing exists yet, or the active
+      // filter matched nothing. PRD §7 names the second "No todos match".
+      function syncEmptyState() {
+        if (list.children.length > 0) {
+          empty.hidden = true;
+          return;
+        }
+        empty.textContent = filtersActive() ? "No todos match" : "No todos yet.";
+        empty.hidden = false;
+      }
+
+      // Only non-default values are sent, so an untouched filter bar requests
+      // the bare list and each control "adds" exactly its own parameter.
+      function listURL() {
+        var params = new URLSearchParams();
+        if (filters.status !== "all") {
+          params.set("status", filters.status);
+        }
+        if (filters.q !== "") {
+          params.set("q", filters.q);
+        }
+        if (filters.priority !== "") {
+          params.set("priority", filters.priority);
+        }
+        if (filters.sort !== "created") {
+          params.set("sort", filters.sort);
+        }
+        var query = params.toString();
+        return query === "" ? "/api/todos" : "/api/todos?" + query;
       }
 
       function loadTodos() {
-        return fetch("/api/todos")
+        return fetch(listURL())
           .then(function (resp) {
             if (!resp.ok) {
               throw new Error("HTTP " + resp.status);
@@ -394,15 +499,54 @@
           .then(function (resp) {
             return resp.json();
           })
-          .then(function (todo) {
+          .then(function () {
             clearError("create");
             form.reset();
             titleInput.focus();
-            appendTodo(todo);
+            loadTodos();
           })
           .catch(function (err) {
             showError("create", err.message || "Could not add todo.");
           });
+      });
+
+      function setStatus(status) {
+        filters.status = status;
+        for (var i = 0; i < statusButtons.length; i++) {
+          var isActive = statusButtons[i].getAttribute("data-status") === status;
+          statusButtons[i].classList.toggle("active", isActive);
+          statusButtons[i].setAttribute("aria-pressed", isActive ? "true" : "false");
+        }
+      }
+
+      for (var b = 0; b < statusButtons.length; b++) {
+        statusButtons[b].addEventListener("click", function (event) {
+          setStatus(event.currentTarget.getAttribute("data-status"));
+          loadTodos();
+        });
+      }
+
+      filterPrioritySelect.addEventListener("change", function () {
+        filters.priority = filterPrioritySelect.value;
+        loadTodos();
+      });
+
+      sortSelect.addEventListener("change", function () {
+        filters.sort = sortSelect.value;
+        loadTodos();
+      });
+
+      // Typing fires one request per pause, not one per keystroke (PRD §7).
+      var searchTimer = null;
+      searchInput.addEventListener("input", function () {
+        if (searchTimer !== null) {
+          clearTimeout(searchTimer);
+        }
+        searchTimer = setTimeout(function () {
+          searchTimer = null;
+          filters.q = searchInput.value.trim();
+          loadTodos();
+        }, SEARCH_DEBOUNCE_MS);
       });
 
       loadTodos();

@@ -736,6 +736,17 @@ func TestIndexServesHTML(t *testing.T) {
 		`/toggle`,
 		`method: "PATCH"`,
 		`method: "DELETE"`,
+		`id="search"`,
+		`id="filter-priority"`,
+		`id="sort"`,
+		`data-status="all"`,
+		`data-status="active"`,
+		`data-status="done"`,
+		"No todos match",
+		`params.set("status"`,
+		`params.set("q"`,
+		`params.set("priority"`,
+		`params.set("sort"`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("index.html body missing %q", want)
@@ -744,25 +755,20 @@ func TestIndexServesHTML(t *testing.T) {
 
 	// The served form and the server validator are separate hand-written
 	// declarations across a language boundary (the file is served verbatim, no
-	// build step), so bind them here: the options offered by the page must be
-	// exactly validPriorities, the selected one must be the server default, and
-	// every priority the page can render must have a badge style.
-	options := parsePriorityOptions(t, page)
+	// build step), so bind them here: the options offered by each select must
+	// match the vocabulary the server accepts, and every priority the page can
+	// render must have a badge style.
+	assertOptionsMatch(t, parseSelectOptions(t, page, "priority"), validPriorities, "priority")
+	assertOptionsMatch(t, parseSelectOptions(t, page, "filter-priority"), validPriorities, "filter-priority")
+	assertOptionsMatch(t, parseSelectOptions(t, page, "sort"), validSorts, "sort")
+
 	for priority := range validPriorities {
-		if _, ok := options[priority]; !ok {
-			t.Errorf("priority option %q missing from index.html", priority)
-		}
 		if !strings.Contains(page, ".badge-"+priority) {
 			t.Errorf("index.html missing badge style for priority %q", priority)
 		}
 	}
-	for priority := range options {
-		if !validPriorities[priority] {
-			t.Errorf("index.html offers unknown priority %q", priority)
-		}
-	}
 	var selected []string
-	for priority, attrs := range options {
+	for priority, attrs := range parseSelectOptions(t, page, "priority") {
 		if strings.Contains(attrs, "selected") {
 			selected = append(selected, priority)
 		}
@@ -772,18 +778,40 @@ func TestIndexServesHTML(t *testing.T) {
 	}
 }
 
-// parsePriorityOptions maps each <option value="..."> in the served page to its
-// remaining attributes so the test can compare the form's vocabulary against
-// validPriorities rather than restating it.
-func parsePriorityOptions(t *testing.T, page string) map[string]string {
+// parseSelectOptions maps each <option value="..."> inside the select with the
+// given id to its remaining attributes. The empty value (a filter's "any"
+// sentinel) has no option here because it is not a value the server accepts.
+func parseSelectOptions(t *testing.T, page, id string) map[string]string {
 	t.Helper()
+	selectRe := regexp.MustCompile(`(?s)<select id="` + id + `"[^>]*>(.*?)</select>`)
+	m := selectRe.FindStringSubmatch(page)
+	if m == nil {
+		t.Fatalf("index.html contains no select id=%q", id)
+	}
 	re := regexp.MustCompile(`<option value="([^"]+)"([^>]*)>`)
 	options := map[string]string{}
-	for _, m := range re.FindAllStringSubmatch(page, -1) {
-		options[m[1]] = m[2]
+	for _, om := range re.FindAllStringSubmatch(m[1], -1) {
+		options[om[1]] = om[2]
 	}
 	if len(options) == 0 {
-		t.Fatal("index.html contains no priority options")
+		t.Fatalf("index.html select id=%q contains no options", id)
 	}
 	return options
+}
+
+// assertOptionsMatch checks that a select's offered values are exactly the
+// server's accepted vocabulary, so neither side can drift without the test
+// noticing.
+func assertOptionsMatch(t *testing.T, options map[string]string, valid map[string]bool, label string) {
+	t.Helper()
+	for value := range valid {
+		if _, ok := options[value]; !ok {
+			t.Errorf("%s option %q missing from index.html", label, value)
+		}
+	}
+	for value := range options {
+		if !valid[value] {
+			t.Errorf("index.html %s offers unknown value %q", label, value)
+		}
+	}
 }
