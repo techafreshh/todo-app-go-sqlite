@@ -16,6 +16,10 @@ const (
 	// defaultPort is the listen port when PORT is unset or empty; the compose
 	// test derives the effective port from it rather than assuming a literal.
 	defaultPort = "8080"
+
+	// defaultDBPath is where the database lands when DB_PATH is unset; the
+	// README guard test binds its documented value to this constant.
+	defaultDBPath = "./todos.db"
 )
 
 // indexFile is served relative to the process working directory, which the
@@ -24,7 +28,7 @@ const indexFile = "static/index.html"
 
 func main() {
 	port := envOr(envPort, defaultPort)
-	dbPath := envOr(envDBPath, "./todos.db")
+	dbPath := envOr(envDBPath, defaultDBPath)
 
 	db, err := openDB(dbPath)
 	if err != nil {
@@ -42,20 +46,33 @@ func main() {
 	}
 }
 
-// routeUpdateTodo owns the edit wire contract. The served page re-declares the
-// same verb and path in its client fetch, and the conformance test binds the
-// page to this constant.
-const routeUpdateTodo = "PUT /api/todos/{id}"
+// The declared HTTP surface, each pattern "METHOD /path". newMux registers from
+// these and the README guard test binds the documented route table to them, so a
+// route renamed in one place and not the other fails a check.
+const (
+	routeHealthz    = "GET /healthz"
+	routeCreateTodo = "POST /api/todos"
+	routeListTodos  = "GET /api/todos"
+
+	// routeUpdateTodo owns the edit wire contract. The served page re-declares
+	// the same verb and path in its client fetch, and the conformance test binds
+	// the page to this constant.
+	routeUpdateTodo = "PUT /api/todos/{id}"
+
+	routeToggleTodo = "PATCH /api/todos/{id}/toggle"
+	routeDeleteTodo = "DELETE /api/todos/{id}"
+	routeIndex      = "GET /{$}"
+)
 
 func newMux(h *Handler) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", h.healthz)
-	mux.HandleFunc("POST /api/todos", h.createTodo)
-	mux.HandleFunc("GET /api/todos", h.listTodos)
+	mux.HandleFunc(routeHealthz, h.healthz)
+	mux.HandleFunc(routeCreateTodo, h.createTodo)
+	mux.HandleFunc(routeListTodos, h.listTodos)
 	mux.HandleFunc(routeUpdateTodo, h.updateTodo)
-	mux.HandleFunc("PATCH /api/todos/{id}/toggle", h.toggleTodo)
-	mux.HandleFunc("DELETE /api/todos/{id}", h.deleteTodo)
-	mux.HandleFunc("GET /{$}", h.index)
+	mux.HandleFunc(routeToggleTodo, h.toggleTodo)
+	mux.HandleFunc(routeDeleteTodo, h.deleteTodo)
+	mux.HandleFunc(routeIndex, h.index)
 	return jsonErrorResponses(mux)
 }
 

@@ -61,8 +61,10 @@ not expose it publicly without a reverse proxy.
 
 ## API
 
-All responses are JSON. Errors use `{"error":"..."}` with `400` for validation
-failures and `404` for unknown ids.
+JSON endpoints respond with JSON. Errors use `{"error":"..."}` with `400` for
+validation failures, `404` for an unknown id or route, and `405` for a wrong
+method. Two endpoints are not JSON: `DELETE /api/todos/{id}` returns `204 No
+Content` with an empty body, and `GET /` serves the HTML UI.
 
 | Method   | Path                      | Purpose                          |
 |----------|---------------------------|----------------------------------|
