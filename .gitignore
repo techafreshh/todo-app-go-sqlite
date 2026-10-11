@@ -1,5 +1,6 @@
 # Binaries
 /server
+/todo-app-go-sqlite
 todo-app
 *.exe
 *.exe~
