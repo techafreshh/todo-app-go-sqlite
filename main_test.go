@@ -2,11 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func newTestServer(t *testing.T) *httptest.Server {
@@ -215,6 +218,344 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 	}
 	if len(todos) != 1 || todos[0].Title != "Persist me" {
 		t.Fatalf("todos = %+v, want one row 'Persist me'", todos)
+	}
+}
+
+func doRequest(t *testing.T, method, url, body string) *http.Response {
+	t.Helper()
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+	req, err := http.NewRequest(method, url, reader)
+	if err != nil {
+		t.Fatalf("new request %s %s: %v", method, url, err)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, url, err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
+
+func createTestTodo(t *testing.T, srv *httptest.Server, payload string) Todo {
+	t.Helper()
+	resp := doRequest(t, http.MethodPost, srv.URL+"/api/todos", payload)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", resp.StatusCode)
+	}
+	var created Todo
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created: %v", err)
+	}
+	return created
+}
+
+func decodeError(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if body.Error == "" {
+		t.Errorf("error message is empty")
+	}
+	return body.Error
+}
+
+func assertLater(t *testing.T, earlier, later string) {
+	t.Helper()
+	e, err := time.Parse(time.RFC3339, earlier)
+	if err != nil {
+		t.Fatalf("parse earlier timestamp %q: %v", earlier, err)
+	}
+	l, err := time.Parse(time.RFC3339, later)
+	if err != nil {
+		t.Fatalf("parse later timestamp %q: %v", later, err)
+	}
+	if !l.After(e) {
+		t.Errorf("updated_at %q is not later than created_at %q", later, earlier)
+	}
+}
+
+func TestUpdateTodo(t *testing.T) {
+	srv := newTestServer(t)
+	created := createTestTodo(t, srv, `{"title":"Pay rent","priority":"high","due_date":"2026-10-15"}`)
+
+	resp := doRequest(t, http.MethodPut, srv.URL+"/api/todos/1",
+		`{"title":"Pay rent early","priority":"medium","due_date":"2026-10-14","done":true}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200", resp.StatusCode)
+	}
+	var updated Todo
+	if err := json.NewDecoder(resp.Body).Decode(&updated); err != nil {
+		t.Fatalf("decode updated: %v", err)
+	}
+	if updated.ID != 1 {
+		t.Errorf("id = %d, want 1", updated.ID)
+	}
+	if updated.Title != "Pay rent early" {
+		t.Errorf("title = %q, want Pay rent early", updated.Title)
+	}
+	if updated.Priority != "medium" {
+		t.Errorf("priority = %q, want medium", updated.Priority)
+	}
+	if updated.DueDate == nil || *updated.DueDate != "2026-10-14" {
+		t.Errorf("due_date = %v, want 2026-10-14", updated.DueDate)
+	}
+	if !updated.Done {
+		t.Errorf("done = false, want true")
+	}
+	if updated.CreatedAt != created.CreatedAt {
+		t.Errorf("created_at = %q, want unchanged %q", updated.CreatedAt, created.CreatedAt)
+	}
+	assertLater(t, created.CreatedAt, updated.UpdatedAt)
+
+	listResp := doRequest(t, http.MethodGet, srv.URL+"/api/todos", "")
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("list status = %d, want 200", listResp.StatusCode)
+	}
+	var todos []Todo
+	if err := json.NewDecoder(listResp.Body).Decode(&todos); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(todos) != 1 || todos[0].Title != "Pay rent early" || !todos[0].Done {
+		t.Fatalf("todos = %+v, want one updated done row", todos)
+	}
+}
+
+func TestUpdateTodoValidation(t *testing.T) {
+	srv := newTestServer(t)
+	createTestTodo(t, srv, `{"title":"Pay rent"}`)
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"empty title", `{"title":"   ","priority":"medium","done":true}`},
+		{"long title", `{"title":"` + strings.Repeat("x", 256) + `"}`},
+		{"bad priority", `{"title":"x","priority":"urgent"}`},
+		{"bad date", `{"title":"x","due_date":"10/15/2026"}`},
+		{"malformed json", `{"title":`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doRequest(t, http.MethodPut, srv.URL+"/api/todos/1", tc.body)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", resp.StatusCode)
+			}
+			decodeError(t, resp)
+		})
+	}
+}
+
+func TestUpdateTodoNotFound(t *testing.T) {
+	srv := newTestServer(t)
+	resp := doRequest(t, http.MethodPut, srv.URL+"/api/todos/999",
+		`{"title":"x","priority":"low","done":true}`)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	decodeError(t, resp)
+}
+
+func TestToggleTodo(t *testing.T) {
+	srv := newTestServer(t)
+	created := createTestTodo(t, srv, `{"title":"Pay rent","priority":"high"}`)
+
+	resp := doRequest(t, http.MethodPatch, srv.URL+"/api/todos/1/toggle", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("toggle status = %d, want 200", resp.StatusCode)
+	}
+	var toggled Todo
+	if err := json.NewDecoder(resp.Body).Decode(&toggled); err != nil {
+		t.Fatalf("decode toggled: %v", err)
+	}
+	if !toggled.Done {
+		t.Errorf("done = false, want true")
+	}
+	assertLater(t, created.CreatedAt, toggled.UpdatedAt)
+
+	back := doRequest(t, http.MethodPatch, srv.URL+"/api/todos/1/toggle", "")
+	if back.StatusCode != http.StatusOK {
+		t.Fatalf("second toggle status = %d, want 200", back.StatusCode)
+	}
+	var untoggled Todo
+	if err := json.NewDecoder(back.Body).Decode(&untoggled); err != nil {
+		t.Fatalf("decode untoggled: %v", err)
+	}
+	if untoggled.Done {
+		t.Errorf("done = true, want false")
+	}
+	assertLater(t, toggled.UpdatedAt, untoggled.UpdatedAt)
+}
+
+func TestToggleTodoNotFound(t *testing.T) {
+	srv := newTestServer(t)
+	resp := doRequest(t, http.MethodPatch, srv.URL+"/api/todos/999/toggle", "")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	decodeError(t, resp)
+}
+
+func TestDeleteTodo(t *testing.T) {
+	srv := newTestServer(t)
+	createTestTodo(t, srv, `{"title":"Pay rent"}`)
+
+	resp := doRequest(t, http.MethodDelete, srv.URL+"/api/todos/1", "")
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if len(body) != 0 {
+		t.Errorf("delete body = %q, want empty", body)
+	}
+
+	listResp := doRequest(t, http.MethodGet, srv.URL+"/api/todos", "")
+	var todos []Todo
+	if err := json.NewDecoder(listResp.Body).Decode(&todos); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(todos) != 0 {
+		t.Fatalf("todos = %+v, want empty", todos)
+	}
+
+	again := doRequest(t, http.MethodDelete, srv.URL+"/api/todos/1", "")
+	if again.StatusCode != http.StatusNotFound {
+		t.Fatalf("second delete status = %d, want 404", again.StatusCode)
+	}
+	decodeError(t, again)
+}
+
+func TestDeleteTodoNotFound(t *testing.T) {
+	srv := newTestServer(t)
+	resp := doRequest(t, http.MethodDelete, srv.URL+"/api/todos/999", "")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	decodeError(t, resp)
+}
+
+func TestWriteRowIsolation(t *testing.T) {
+	verbs := []struct {
+		name    string
+		request func(t *testing.T, srv *httptest.Server)
+	}{
+		{
+			name: "update",
+			request: func(t *testing.T, srv *httptest.Server) {
+				resp := doRequest(t, http.MethodPut, srv.URL+"/api/todos/1",
+					`{"title":"changed","priority":"high","done":true}`)
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("PUT status = %d, want 200", resp.StatusCode)
+				}
+			},
+		},
+		{
+			name: "toggle",
+			request: func(t *testing.T, srv *httptest.Server) {
+				resp := doRequest(t, http.MethodPatch, srv.URL+"/api/todos/1/toggle", "")
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("PATCH status = %d, want 200", resp.StatusCode)
+				}
+			},
+		},
+		{
+			name: "delete",
+			request: func(t *testing.T, srv *httptest.Server) {
+				resp := doRequest(t, http.MethodDelete, srv.URL+"/api/todos/1", "")
+				if resp.StatusCode != http.StatusNoContent {
+					t.Fatalf("DELETE status = %d, want 204", resp.StatusCode)
+				}
+			},
+		},
+	}
+
+	for _, v := range verbs {
+		t.Run(v.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			createTestTodo(t, srv, `{"title":"first","priority":"high","due_date":"2026-10-15"}`)
+			createTestTodo(t, srv, `{"title":"second","priority":"low","due_date":"2026-10-20"}`)
+
+			v.request(t, srv)
+
+			listResp := doRequest(t, http.MethodGet, srv.URL+"/api/todos", "")
+			var todos []Todo
+			if err := json.NewDecoder(listResp.Body).Decode(&todos); err != nil {
+				t.Fatalf("decode list: %v", err)
+			}
+			var survivor *Todo
+			for i := range todos {
+				if todos[i].ID == 2 {
+					survivor = &todos[i]
+				}
+			}
+			if survivor == nil {
+				t.Fatalf("todos = %+v, want id 2 to survive", todos)
+			}
+			if survivor.Title != "second" || survivor.Priority != "low" || survivor.Done {
+				t.Errorf("row 2 = %+v, want original fields", survivor)
+			}
+			if survivor.DueDate == nil || *survivor.DueDate != "2026-10-20" {
+				t.Errorf("row 2 due_date = %v, want 2026-10-20", survivor.DueDate)
+			}
+		})
+	}
+}
+
+func TestToggleTodoConcurrent(t *testing.T) {
+	srv := newTestServer(t)
+	createTestTodo(t, srv, `{"title":"race"}`)
+
+	const toggles = 8
+	statuses := make(chan int, toggles)
+	var wg sync.WaitGroup
+	for i := 0; i < toggles; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req, err := http.NewRequest(http.MethodPatch, srv.URL+"/api/todos/1/toggle", nil)
+			if err != nil {
+				statuses <- -1
+				return
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				statuses <- -1
+				return
+			}
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			statuses <- resp.StatusCode
+		}()
+	}
+	wg.Wait()
+	close(statuses)
+	for status := range statuses {
+		if status != http.StatusOK {
+			t.Fatalf("toggle status = %d, want 200", status)
+		}
+	}
+
+	listResp := doRequest(t, http.MethodGet, srv.URL+"/api/todos", "")
+	var todos []Todo
+	if err := json.NewDecoder(listResp.Body).Decode(&todos); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(todos) != 1 {
+		t.Fatalf("len(todos) = %d, want 1", len(todos))
+	}
+	if todos[0].Done {
+		t.Errorf("done = true after %d concurrent toggles, want false", toggles)
 	}
 }
 
