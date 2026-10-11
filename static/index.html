@@ -369,14 +369,11 @@
           .then(function (resp) {
             return ensureOk(resp, "Could not update todo.");
           })
-          .then(function (resp) {
-            return resp.json();
-          })
-          .then(function (updated) {
+          .then(function () {
             clearError(source);
-            todo.done = updated.done;
-            checkbox.checked = updated.done;
-            item.className = "todo" + (updated.done ? " done" : "");
+            // A toggle can move the row out of the active status filter, so
+            // reload the filtered list instead of mutating the row in place.
+            loadTodos();
           })
           .catch(function (err) {
             checkbox.checked = todo.done;
