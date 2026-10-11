@@ -100,6 +100,21 @@
     }
     .todo-title { flex: 1 1 auto; overflow-wrap: anywhere; }
     li.todo.done .todo-title { text-decoration: line-through; color: var(--muted); }
+    .todo-toggle {
+      flex: 0 0 auto;
+      width: 1.1rem;
+      height: 1.1rem;
+      padding: 0;
+      accent-color: var(--accent);
+    }
+    .todo-delete {
+      flex: 0 0 auto;
+      padding: 0.3rem 0.6rem;
+      border-color: var(--line);
+      background: transparent;
+      color: var(--danger);
+    }
+    .todo-delete:hover { border-color: var(--danger); filter: none; }
     .badge {
       flex: 0 0 auto;
       padding: 0.15rem 0.5rem;
@@ -173,9 +188,8 @@
 
       var errorSource = null;
 
-      // The banner is shared by the load and add flows; only the flow that set
-      // it may clear it, so one operation's success never erases another's
-      // failure.
+      // The banner is shared by every flow; only the flow that set it may clear
+      // it, so one operation's success never erases another's failure.
       function showError(source, message) {
         errorSource = source;
         errorBanner.textContent = message;
@@ -205,6 +219,16 @@
         var item = document.createElement("li");
         item.className = "todo" + (todo.done ? " done" : "");
 
+        var checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.className = "todo-toggle";
+        checkbox.checked = todo.done;
+        checkbox.setAttribute("aria-label", "Mark done");
+        checkbox.addEventListener("change", function () {
+          toggleTodo(todo, item, checkbox);
+        });
+        item.appendChild(checkbox);
+
         var title = document.createElement("span");
         title.className = "todo-title";
         title.textContent = todo.title;
@@ -222,7 +246,64 @@
           item.appendChild(due);
         }
 
+        var remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "todo-delete";
+        remove.textContent = "Delete";
+        remove.setAttribute("aria-label", "Delete " + todo.title);
+        remove.addEventListener("click", function () {
+          deleteTodo(todo, item);
+        });
+        item.appendChild(remove);
+
         return item;
+      }
+
+      function toggleTodo(todo, item, checkbox) {
+        var source = "toggle:" + todo.id;
+        fetch("/api/todos/" + todo.id + "/toggle", { method: "PATCH" })
+          .then(function (resp) {
+            if (!resp.ok) {
+              return resp.json().catch(function () {
+                return {};
+              }).then(function (body) {
+                throw new Error(body.error || "Could not update todo.");
+              });
+            }
+            return resp.json();
+          })
+          .then(function (updated) {
+            clearError(source);
+            todo.done = updated.done;
+            checkbox.checked = updated.done;
+            item.className = "todo" + (updated.done ? " done" : "");
+          })
+          .catch(function (err) {
+            checkbox.checked = todo.done;
+            showError(source, err.message || "Could not update todo.");
+          });
+      }
+
+      function deleteTodo(todo, item) {
+        var source = "delete:" + todo.id;
+        fetch("/api/todos/" + todo.id, { method: "DELETE" })
+          .then(function (resp) {
+            if (!resp.ok) {
+              return resp.json().catch(function () {
+                return {};
+              }).then(function (body) {
+                throw new Error(body.error || "Could not delete todo.");
+              });
+            }
+            clearError(source);
+            item.remove();
+            if (list.children.length === 0) {
+              empty.hidden = false;
+            }
+          })
+          .catch(function (err) {
+            showError(source, err.message || "Could not delete todo.");
+          });
       }
 
       function render(todos) {
