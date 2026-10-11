@@ -215,6 +215,28 @@
         validation.textContent = "";
       }
 
+      // A non-2xx response carries the server's {"error": ...} envelope; surface
+      // it as a rejected promise so every mutation flow shares one failure path.
+      function ensureOk(resp, fallback) {
+        if (resp.ok) {
+          return Promise.resolve(resp);
+        }
+        return resp.json().catch(function () {
+          return {};
+        }).then(function (body) {
+          throw new Error(body.error || fallback);
+        });
+      }
+
+      // A row's controls stay disabled while its mutation is in flight, so a
+      // second activation cannot race the first response into the DOM.
+      function setRowBusy(item, busy) {
+        var controls = item.querySelectorAll(".todo-toggle, .todo-delete");
+        for (var i = 0; i < controls.length; i++) {
+          controls[i].disabled = busy;
+        }
+      }
+
       function renderTodo(todo) {
         var item = document.createElement("li");
         item.className = "todo" + (todo.done ? " done" : "");
@@ -261,15 +283,12 @@
 
       function toggleTodo(todo, item, checkbox) {
         var source = "toggle:" + todo.id;
+        setRowBusy(item, true);
         fetch("/api/todos/" + todo.id + "/toggle", { method: "PATCH" })
           .then(function (resp) {
-            if (!resp.ok) {
-              return resp.json().catch(function () {
-                return {};
-              }).then(function (body) {
-                throw new Error(body.error || "Could not update todo.");
-              });
-            }
+            return ensureOk(resp, "Could not update todo.");
+          })
+          .then(function (resp) {
             return resp.json();
           })
           .then(function (updated) {
@@ -281,20 +300,24 @@
           .catch(function (err) {
             checkbox.checked = todo.done;
             showError(source, err.message || "Could not update todo.");
+          })
+          .finally(function () {
+            setRowBusy(item, false);
           });
       }
 
       function deleteTodo(todo, item) {
         var source = "delete:" + todo.id;
+        setRowBusy(item, true);
         fetch("/api/todos/" + todo.id, { method: "DELETE" })
           .then(function (resp) {
-            if (!resp.ok) {
-              return resp.json().catch(function () {
-                return {};
-              }).then(function (body) {
-                throw new Error(body.error || "Could not delete todo.");
-              });
+            // DELETE is idempotent: a 404 means the row is already gone.
+            if (resp.status === 404) {
+              return;
             }
+            return ensureOk(resp, "Could not delete todo.");
+          })
+          .then(function () {
             clearError(source);
             item.remove();
             if (list.children.length === 0) {
@@ -303,6 +326,11 @@
           })
           .catch(function (err) {
             showError(source, err.message || "Could not delete todo.");
+          })
+          .finally(function () {
+            if (item.isConnected) {
+              setRowBusy(item, false);
+            }
           });
       }
 
@@ -361,13 +389,9 @@
           body: JSON.stringify(payload)
         })
           .then(function (resp) {
-            if (!resp.ok) {
-              return resp.json().catch(function () {
-                return {};
-              }).then(function (body) {
-                throw new Error(body.error || "Could not add todo.");
-              });
-            }
+            return ensureOk(resp, "Could not add todo.");
+          })
+          .then(function (resp) {
             return resp.json();
           })
           .then(function (todo) {
