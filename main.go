@@ -31,6 +31,9 @@ func newMux(h *Handler) *http.ServeMux {
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("POST /api/todos", h.createTodo)
 	mux.HandleFunc("GET /api/todos", h.listTodos)
+	mux.HandleFunc("PUT /api/todos/{id}", h.updateTodo)
+	mux.HandleFunc("PATCH /api/todos/{id}/toggle", h.toggleTodo)
+	mux.HandleFunc("DELETE /api/todos/{id}", h.deleteTodo)
 	mux.HandleFunc("GET /{$}", h.index)
 	return mux
 }
