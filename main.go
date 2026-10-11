@@ -12,6 +12,10 @@ import (
 const (
 	envPort   = "PORT"
 	envDBPath = "DB_PATH"
+
+	// defaultPort is the listen port when PORT is unset or empty; the compose
+	// test derives the effective port from it rather than assuming a literal.
+	defaultPort = "8080"
 )
 
 // indexFile is served relative to the process working directory, which the
@@ -19,7 +23,7 @@ const (
 const indexFile = "static/index.html"
 
 func main() {
-	port := envOr(envPort, "8080")
+	port := envOr(envPort, defaultPort)
 	dbPath := envOr(envDBPath, "./todos.db")
 
 	db, err := openDB(dbPath)
