@@ -739,14 +739,7 @@ func TestIndexServesHTML(t *testing.T) {
 		`id="search"`,
 		`id="filter-priority"`,
 		`id="sort"`,
-		`data-status="all"`,
-		`data-status="active"`,
-		`data-status="done"`,
 		"No todos match",
-		`params.set("status"`,
-		`params.set("q"`,
-		`params.set("priority"`,
-		`params.set("sort"`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("index.html body missing %q", want)
@@ -755,26 +748,62 @@ func TestIndexServesHTML(t *testing.T) {
 
 	// The served form and the server validator are separate hand-written
 	// declarations across a language boundary (the file is served verbatim, no
-	// build step), so bind them here: the options offered by each select must
-	// match the vocabulary the server accepts, and every priority the page can
-	// render must have a badge style.
+	// build step), so bind them here: the values and parameter names the page
+	// uses must match the vocabulary and names the server accepts, and every
+	// priority the page can render must have a badge style.
+	assertOptionsMatch(t, parseDataStatus(t, page), validStatuses, "status")
 	assertOptionsMatch(t, parseSelectOptions(t, page, "priority"), validPriorities, "priority")
 	assertOptionsMatch(t, parseSelectOptions(t, page, "filter-priority"), validPriorities, "filter-priority")
 	assertOptionsMatch(t, parseSelectOptions(t, page, "sort"), validSorts, "sort")
+
+	for _, param := range []string{paramStatus, paramQuery, paramPriority, paramSort} {
+		if !strings.Contains(page, "params.set(\""+param+"\"") {
+			t.Errorf("index.html body missing params.set(%q)", param)
+		}
+	}
 
 	for priority := range validPriorities {
 		if !strings.Contains(page, ".badge-"+priority) {
 			t.Errorf("index.html missing badge style for priority %q", priority)
 		}
 	}
+
+	// Each control's initial selection must be the server's default for that
+	// parameter, so an untouched page requests the documented default list.
+	assertSingleSelected(t, parseSelectOptions(t, page, "priority"), "selected", defaultPriority, "priority")
+	assertSingleSelected(t, parseSelectOptions(t, page, "sort"), "selected", defaultSort, "sort")
+	assertSingleSelected(t, parseDataStatus(t, page), `aria-pressed="true"`, defaultStatus, "status")
+}
+
+// parseDataStatus maps each status button's data-status value to the rest of
+// its attributes, so the segmented control can be compared to the server's
+// status vocabulary and its selected default read back.
+func parseDataStatus(t *testing.T, page string) map[string]string {
+	t.Helper()
+	re := regexp.MustCompile(`<button[^>]*data-status="([^"]+)"([^>]*)>`)
+	matches := re.FindAllStringSubmatch(page, -1)
+	if len(matches) == 0 {
+		t.Fatal("index.html contains no data-status buttons")
+	}
+	statuses := map[string]string{}
+	for _, m := range matches {
+		statuses[m[1]] = m[2]
+	}
+	return statuses
+}
+
+// assertSingleSelected checks that exactly one option carries the selection
+// marker and that it is the wanted value.
+func assertSingleSelected(t *testing.T, options map[string]string, marker, want, label string) {
+	t.Helper()
 	var selected []string
-	for priority, attrs := range parseSelectOptions(t, page, "priority") {
-		if strings.Contains(attrs, "selected") {
-			selected = append(selected, priority)
+	for value, attrs := range options {
+		if strings.Contains(attrs, marker) {
+			selected = append(selected, value)
 		}
 	}
-	if len(selected) != 1 || selected[0] != defaultPriority {
-		t.Errorf("selected priority = %v, want exactly [%q]", selected, defaultPriority)
+	if len(selected) != 1 || selected[0] != want {
+		t.Errorf("selected %s = %v, want exactly [%q]", label, selected, want)
 	}
 }
 

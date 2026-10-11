@@ -28,7 +28,20 @@ type updateTodoRequest struct {
 	Done     bool    `json:"done"`
 }
 
-const defaultPriority = "medium"
+const (
+	defaultPriority = "medium"
+	defaultStatus   = "all"
+	defaultSort     = "created"
+)
+
+// Query-parameter names of GET /api/todos. They live here so the served page
+// and the conformance test bind to one owner instead of hand-syncing strings.
+const (
+	paramStatus   = "status"
+	paramPriority = "priority"
+	paramSort     = "sort"
+	paramQuery    = "q"
+)
 
 var validPriorities = map[string]bool{
 	"low":           true,
@@ -191,27 +204,27 @@ func (h *Handler) listTodos(w http.ResponseWriter, r *http.Request) {
 // value outside the allowed set is rejected so bad input never reaches SQL.
 func parseListFilter(r *http.Request) (listFilter, error) {
 	q := r.URL.Query()
-	filter := listFilter{Status: "all", Sort: "created"}
+	filter := listFilter{Status: defaultStatus, Sort: defaultSort}
 
-	if v := q.Get("status"); v != "" {
+	if v := q.Get(paramStatus); v != "" {
 		if !validStatuses[v] {
 			return listFilter{}, errors.New("status must be one of all, active, done")
 		}
 		filter.Status = v
 	}
-	if v := q.Get("priority"); v != "" {
+	if v := q.Get(paramPriority); v != "" {
 		if !validPriorities[v] {
 			return listFilter{}, errors.New("priority must be one of low, medium, high")
 		}
 		filter.Priority = v
 	}
-	if v := q.Get("sort"); v != "" {
+	if v := q.Get(paramSort); v != "" {
 		if !validSorts[v] {
 			return listFilter{}, errors.New("sort must be one of due, created, priority")
 		}
 		filter.Sort = v
 	}
-	filter.Query = strings.TrimSpace(q.Get("q"))
+	filter.Query = strings.TrimSpace(q.Get(paramQuery))
 	return filter, nil
 }
 
