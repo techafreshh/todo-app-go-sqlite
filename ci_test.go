@@ -15,6 +15,7 @@ func TestCIWorkflowContract(t *testing.T) {
 		t.Fatalf("read ci.yml: %v", err)
 	}
 	wf := string(raw)
+	lines := composeLines(wf)
 
 	// Required elements: the checks the merge queue relies on actually run.
 	for _, want := range []string{
@@ -22,50 +23,54 @@ func TestCIWorkflowContract(t *testing.T) {
 		"go vet ./...",
 		"go test ./...",
 		"go build ./...",
-		"docker build", // the shipped image builds in CI
-		"branches: [main]",
+		"docker build",  // the shipped image builds in CI
+		"pull_request:", // every PR is checked
 	} {
 		if !strings.Contains(wf, want) {
 			t.Errorf("ci.yml missing required element %q", want)
 		}
 	}
 
+	// The workflow runs on push to main.
+	push := composeBlock(t, composeBlock(t, lines, "on:", 0), "push:", 2)
+	if !containsText(push, "main") {
+		t.Error("ci.yml must run on push to main")
+	}
+
 	// No secret access and no template expressions anywhere in the workflow.
-	for _, banned := range []string{"secrets", "${{", "id-token", "packages"} {
+	for _, banned := range []string{"secrets", "${{"} {
 		if strings.Contains(wf, banned) {
 			t.Errorf("ci.yml must not contain %q", banned)
 		}
 	}
 
-	// The permissions block grants exactly contents: read — nothing else.
-	body, ok := permissionsBlock(wf)
-	if !ok {
-		t.Fatal("ci.yml has no parseable permissions block")
+	// Exactly one permissions block in the whole file — a job-level override is
+	// a second block and the effective token for that job — granting exactly
+	// contents: read.
+	perms := composeBlock(t, lines, "permissions:", 0)
+	if len(perms) != 1 || perms[0].text != "contents: read" {
+		t.Errorf("workflow permissions must grant exactly 'contents: read', got %v", perms)
 	}
-	if strings.TrimSpace(body) != "contents: read" {
-		t.Errorf("permissions block must grant exactly 'contents: read', got %q", body)
+	if n := countHeader(lines, "permissions:"); n != 1 {
+		t.Errorf("ci.yml must declare exactly one permissions block, found %d", n)
 	}
 }
 
-// permissionsBlock returns the indented body under a top-level "permissions:"
-// key and whether one was found.
-func permissionsBlock(wf string) (string, bool) {
-	lines := strings.Split(wf, "\n")
-	for i, line := range lines {
-		if line != "permissions:" {
-			continue
+func containsText(lines []yamlLine, want string) bool {
+	for _, l := range lines {
+		if strings.Contains(l.text, want) {
+			return true
 		}
-		var body []string
-		for _, next := range lines[i+1:] {
-			if next == "" {
-				continue
-			}
-			if !strings.HasPrefix(next, " ") {
-				break
-			}
-			body = append(body, next)
-		}
-		return strings.Join(body, "\n"), true
 	}
-	return "", false
+	return false
+}
+
+func countHeader(lines []yamlLine, header string) int {
+	n := 0
+	for _, l := range lines {
+		if l.text == header {
+			n++
+		}
+	}
+	return n
 }
