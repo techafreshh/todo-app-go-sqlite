@@ -31,12 +31,12 @@ func TestCIWorkflowContract(t *testing.T) {
 	}
 
 	// Triggers, as parsed values: the workflow runs on push to main and on
-	// every pull request. Exact lines, not substrings — branches-ignore,
+	// every pull request. Exact parsed keys, not substrings — branches-ignore,
 	// paths filters, or a commented-out trigger must fail this.
 	onBlock := composeBlock(t, lines, "on:", 0)
 	push := composeBlock(t, onBlock, "push:", 2)
-	if !hasExactLine(push, "branches: [main]") {
-		t.Error("ci.yml must run on push to main via an exact 'branches: [main]' entry")
+	if got := composeScalar(t, push, "branches:", 4); got != "[main]" {
+		t.Errorf("ci.yml must run on push to main via branches: [main], got %q", got)
 	}
 	composeBlock(t, onBlock, "pull_request:", 2)
 
@@ -48,25 +48,21 @@ func TestCIWorkflowContract(t *testing.T) {
 		}
 	}
 
-	// One permissions declaration in the whole file — the top-level block
-	// header, nothing inline and no job-level override — granting exactly
-	// contents: read.
+	// Exactly one permissions declaration in the whole file — every line
+	// prefixed "permissions:" counts, so inline, scalar, and job-level
+	// overrides all fail — and it must be the top-level block granting
+	// exactly contents: read.
+	n := 0
+	for _, l := range lines {
+		if strings.HasPrefix(l.text, "permissions:") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("ci.yml must declare exactly one permissions declaration (a job-level or inline override is a second), found %d", n)
+	}
 	perms := composeBlock(t, lines, "permissions:", 0)
 	if len(perms) != 1 || perms[0].text != "contents: read" {
 		t.Errorf("workflow permissions must grant exactly 'contents: read', got %v", perms)
 	}
-	for _, l := range lines {
-		if strings.HasPrefix(l.text, "permissions:") && l.text != "permissions:" {
-			t.Errorf("ci.yml must not declare an inline or job-level permissions override, found %q", l.text)
-		}
-	}
-}
-
-func hasExactLine(lines []yamlLine, want string) bool {
-	for _, l := range lines {
-		if l.text == want {
-			return true
-		}
-	}
-	return false
 }
