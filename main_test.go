@@ -1044,21 +1044,78 @@ func getIndex(t *testing.T, srv *httptest.Server) (*http.Response, string) {
 	return resp, string(body)
 }
 
-// TestIndexBindsEditContract checks the edit flow's client copy of the
-// server-owned wire contract against its owners: the request-body keys come
-// from updateTodoRequest's json tags, the fields it reads from Todo's, and the
-// route/verb from the mux's route constant. Renaming either side fails here
-// instead of silently dropping a field or calling the wrong route.
-func TestIndexBindsEditContract(t *testing.T) {
+// TestIndexBindsClientRoutes binds every fetch the served page makes to the
+// mux's route constants. The page is served verbatim (no build step), so it
+// re-declares the routes by hand; comparing the normalized fetch set to the
+// owner set fails on a rename on either side instead of silently calling a
+// route the server no longer registers.
+func TestIndexBindsClientRoutes(t *testing.T) {
 	srv := newTestServer(t)
 	_, page := getIndex(t, srv)
 
-	bodyKeys := payloadKeys(page)
-	for _, tag := range jsonTags(t, updateTodoRequest{}) {
-		if !bodyKeys[tag] {
-			t.Errorf("index.html edit payload missing updateTodoRequest key %q", tag)
+	want := map[string]bool{}
+	for _, route := range []string{routeCreateTodo, routeListTodos, routeUpdateTodo, routeToggleTodo, routeDeleteTodo} {
+		method, path := splitRoute(t, route)
+		want[method+" "+path] = true
+	}
+
+	got := map[string]bool{}
+	for _, r := range clientFetchRoutes(t, page) {
+		key := r.method + " " + r.path
+		if !want[key] {
+			t.Errorf("index.html fetch %s does not match any server route", key)
+		}
+		got[key] = true
+	}
+	for key := range want {
+		if !got[key] {
+			t.Errorf("server route %s is not fetched by index.html", key)
 		}
 	}
+}
+
+// TestIndexBindsRequestPayloads binds each request flow's body keys to its own
+// request struct in both directions: a key dropped from one flow cannot hide
+// behind another flow that still sends it, and a key the client declares that
+// the server does not own is caught instead of being silently dropped by the
+// decoder.
+func TestIndexBindsRequestPayloads(t *testing.T) {
+	srv := newTestServer(t)
+	_, page := getIndex(t, srv)
+
+	cases := []struct {
+		name   string
+		anchor string
+		sample any
+	}{
+		{"create", `form.addEventListener("submit"`, createTodoRequest{}},
+		{"update", "function saveEdit", updateTodoRequest{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			keys := payloadKeysBefore(t, page, tc.anchor)
+			serverTags := map[string]bool{}
+			for _, tag := range jsonTags(t, tc.sample) {
+				serverTags[tag] = true
+				if !keys[tag] {
+					t.Errorf("index.html %s payload missing %T key %q", tc.name, tc.sample, tag)
+				}
+			}
+			for key := range keys {
+				if !serverTags[key] {
+					t.Errorf("index.html %s payload declares %q, not a %T json tag", tc.name, key, tc.sample)
+				}
+			}
+		})
+	}
+}
+
+// TestIndexBindsTodoReadKeys checks that every field the page reads from a todo
+// object is a Todo json tag, so a renamed response field fails here instead of
+// rendering blank.
+func TestIndexBindsTodoReadKeys(t *testing.T) {
+	srv := newTestServer(t)
+	_, page := getIndex(t, srv)
 
 	todoTags := map[string]bool{}
 	for _, tag := range jsonTags(t, Todo{}) {
@@ -1069,23 +1126,135 @@ func TestIndexBindsEditContract(t *testing.T) {
 			t.Errorf("index.html reads todo.%s, which is not a Todo json tag", key)
 		}
 	}
+}
 
-	method, path := splitRoute(t, routeUpdateTodo)
-	prefix := strings.TrimSuffix(path, "{id}")
-	// The edit flow is the only fetch with a JSON body to /api/todos/<id>;
-	// capture its declared verb and path so they can be checked against the
-	// route owner rather than merely appearing somewhere in the page.
-	updateFetch := regexp.MustCompile(`fetch\("([^"]+)" \+ todo\.id, \{\s*method: "([A-Z]+)",\s*headers:`)
-	m := updateFetch.FindStringSubmatch(page)
-	if m == nil {
-		t.Fatal("index.html has no update fetch with a JSON body")
+// TestIndexBindsErrorEnvelope triggers a real server error, decodes the
+// envelope it emits, and checks every key the page reads from an error body
+// exists there. The behavior is the contract, so probing it needs no owner
+// constant and fails on drift in either direction.
+func TestIndexBindsErrorEnvelope(t *testing.T) {
+	srv := newTestServer(t)
+	_, page := getIndex(t, srv)
+
+	resp, err := http.Post(srv.URL+"/api/todos", "application/json", strings.NewReader("{"))
+	if err != nil {
+		t.Fatalf("POST /api/todos: %v", err)
 	}
-	if m[2] != method {
-		t.Errorf("index.html update verb = %q, want %q", m[2], method)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
-	if m[1] != prefix {
-		t.Errorf("index.html update path = %q, want %q", m[1], prefix)
+	var envelope map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode error envelope: %v", err)
 	}
+	for _, key := range clientErrorReadKeys(t, page) {
+		if _, ok := envelope[key]; !ok {
+			t.Errorf("index.html reads error key %q, absent from server envelope %v", key, envelope)
+		}
+	}
+}
+
+// clientRoute is a fetch's verb and normalized path, in the same
+// "METHOD /path" shape the mux registers.
+type clientRoute struct {
+	method string
+	path   string
+}
+
+// clientFetchRoutes scans the served page for every fetch(...) call and
+// normalizes it to the "METHOD /path" shape the mux registers, so the client's
+// declared routes can be compared to the route constants rather than merely
+// substring-matched. It fails loudly on a fetch whose shape it cannot classify
+// rather than skipping it, so a new client call cannot pass unnoticed.
+func clientFetchRoutes(t *testing.T, page string) []clientRoute {
+	t.Helper()
+	fetchRe := regexp.MustCompile(`fetch\(([^,)]+)`)
+	verbRe := regexp.MustCompile(`^\s*,\s*\{\s*method:\s*"([A-Z]+)"`)
+	literalRe := regexp.MustCompile(`"([^"]*)"|todo\.id`)
+	listRe := regexp.MustCompile(`"(/api/[^"?]*)`)
+
+	var routes []clientRoute
+	for _, loc := range fetchRe.FindAllStringSubmatchIndex(page, -1) {
+		expr := page[loc[2]:loc[3]]
+		method := http.MethodGet
+		if m := verbRe.FindStringSubmatch(page[loc[1]:]); m != nil {
+			method = m[1]
+		}
+
+		var path string
+		if strings.Contains(expr, "listURL") {
+			// The list route is built in listURL(), not written inline, so it
+			// cannot be read from the fetch call alone; bind its base path
+			// (the query string is already bound by TestIndexServesHTML).
+			listAt := strings.Index(page, "function listURL")
+			if listAt < 0 {
+				t.Fatal("page fetches listURL() but defines no function listURL")
+			}
+			m := listRe.FindStringSubmatch(page[listAt:])
+			if m == nil {
+				t.Fatal("listURL() has no /api/ literal to bind")
+			}
+			path = m[1]
+		} else {
+			for _, m := range literalRe.FindAllStringSubmatch(expr, -1) {
+				if m[0] == "todo.id" {
+					path += "{id}"
+				} else {
+					path += m[1]
+				}
+			}
+		}
+		if path == "" {
+			t.Fatalf("fetch expression %q has no recognizable path", expr)
+		}
+		routes = append(routes, clientRoute{method: method, path: path})
+	}
+	if len(routes) == 0 {
+		t.Fatal("page contains no fetch calls")
+	}
+	return routes
+}
+
+// payloadKeysBefore returns the request-body keys the page sets on the payload
+// object of the flow beginning at anchor, so each flow's copy can be bound to
+// its own request struct rather than to a merge of every flow's payload.
+func payloadKeysBefore(t *testing.T, page, anchor string) map[string]bool {
+	t.Helper()
+	start := strings.Index(page, anchor)
+	if start < 0 {
+		t.Fatalf("index.html has no anchor %q", anchor)
+	}
+	rest := page[start:]
+	payloadAt := strings.Index(rest, "var payload")
+	if payloadAt < 0 {
+		t.Fatalf("index.html flow %q sets no payload", anchor)
+	}
+	slice := rest[payloadAt:]
+	fetchAt := strings.Index(slice, "fetch(")
+	if fetchAt < 0 {
+		t.Fatalf("index.html flow %q has no fetch after its payload", anchor)
+	}
+	return payloadKeys(slice[:fetchAt])
+}
+
+// clientErrorReadKeys returns the distinct keys the page reads from an error
+// envelope body, so the client's copy can be bound to the envelope the server
+// actually emits.
+func clientErrorReadKeys(t *testing.T, page string) []string {
+	t.Helper()
+	seen := map[string]bool{}
+	var keys []string
+	for _, m := range regexp.MustCompile(`body\.([A-Za-z_]+)`).FindAllStringSubmatch(page, -1) {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			keys = append(keys, m[1])
+		}
+	}
+	if len(keys) == 0 {
+		t.Fatal("index.html reads no error-envelope key")
+	}
+	return keys
 }
 
 // jsonTags returns the wire keys a request or response struct declares, read
