@@ -1,6 +1,7 @@
 package main
 
 import (
+	"embed"
 	"log"
 	"net/http"
 	"os"
@@ -22,9 +23,13 @@ const (
 	defaultDBPath = "./todos.db"
 )
 
-// indexFile is served relative to the process working directory, which the
-// image sets and populates.
+// indexFile names the UI asset embedded into the binary at build time, so
+// GET / serves it from any process working directory (go run, a directly-run
+// binary, or the distroless image).
 const indexFile = "static/index.html"
+
+//go:embed static/index.html
+var staticFS embed.FS
 
 func main() {
 	port := envOr(envPort, defaultPort)
@@ -110,7 +115,7 @@ func (w *jsonErrorWriter) Write(b []byte) (int, error) {
 }
 
 func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, indexFile)
+	http.ServeFileFS(w, r, staticFS, indexFile)
 }
 
 func envOr(key, fallback string) string {

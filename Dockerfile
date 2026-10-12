@@ -13,7 +13,6 @@ FROM gcr.io/distroless/static-debian12
 WORKDIR /app
 
 COPY --from=builder /out/server /app/server
-COPY --from=builder /src/static /app/static
 
 EXPOSE 8080
 VOLUME /data

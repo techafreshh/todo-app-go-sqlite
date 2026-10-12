@@ -9,11 +9,9 @@ import (
 )
 
 // The Dockerfile re-declares the server's runtime interface — the env keys the
-// process reads, the asset path it serves relative to the working directory,
-// and the volume that must back the DB — as independent literals. This test
-// binds the two sides so a rename or reorg on either fails here instead of
-// silently 404-ing the UI or routing the DB into the container layer while
-// /healthz stays green.
+// process reads and the volume that must back the DB — as independent literals.
+// This test binds the two sides so a rename or reorg on either fails here
+// instead of routing the DB into the container layer while /healthz stays green.
 func TestDockerfileBindsRuntimeContract(t *testing.T) {
 	df := readDockerfile(t)
 
@@ -27,17 +25,6 @@ func TestDockerfileBindsRuntimeContract(t *testing.T) {
 		if key != envPort && key != envDBPath {
 			t.Errorf("Dockerfile sets ENV %s, which the server never reads", key)
 		}
-	}
-
-	// main.go serves indexFile relative to the process working directory, so the
-	// image must place it under WORKDIR at that same relative path.
-	workdir := dockerfileWorkdir(t, df)
-	if workdir == "" {
-		t.Fatal("Dockerfile sets no WORKDIR; the relative asset path cannot resolve")
-	}
-	wantAsset := path.Join(workdir, path.Dir(indexFile))
-	if !dockerfileCopiesTo(df, wantAsset) {
-		t.Errorf("Dockerfile does not COPY the served assets to %s", wantAsset)
 	}
 
 	// The DB path must sit under a declared volume, or writes land in the image
@@ -76,31 +63,6 @@ func dockerfileEnv(t *testing.T, df string) map[string]string {
 		}
 	}
 	return envs
-}
-
-// dockerfileWorkdir returns the effective WORKDIR, which Docker resolves to the
-// last instruction seen.
-func dockerfileWorkdir(t *testing.T, df string) string {
-	t.Helper()
-	re := regexp.MustCompile(`(?m)^\s*WORKDIR\s+(\S+)\s*$`)
-	matches := re.FindAllStringSubmatch(df, -1)
-	if len(matches) == 0 {
-		return ""
-	}
-	return matches[len(matches)-1][1]
-}
-
-func dockerfileCopiesTo(df, dest string) bool {
-	for _, line := range dockerfileLogicalLines(df) {
-		fields := strings.Fields(strings.TrimSpace(line))
-		if len(fields) < 3 || !strings.EqualFold(fields[0], "COPY") {
-			continue
-		}
-		if fields[len(fields)-1] == dest {
-			return true
-		}
-	}
-	return false
 }
 
 func dockerfileVolumes(df string) map[string]bool {
