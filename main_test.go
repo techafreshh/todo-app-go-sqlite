@@ -1110,6 +1110,32 @@ func TestIndexBindsRequestPayloads(t *testing.T) {
 	}
 }
 
+// An inline edit can change a sort-keyed field (priority, due date), so under a
+// non-default sort the row must be re-rendered from the server's order rather
+// than swapped in place, which would leave it at its stale index (issue #24).
+// The edit flow reloads the list when a filter is active or the sort differs
+// from the default; this guards that the sort axis stays in that condition.
+func TestIndexEditReloadsUnderActiveSort(t *testing.T) {
+	srv := newTestServer(t)
+	_, page := getIndex(t, srv)
+
+	start := strings.Index(page, "function saveEdit")
+	if start < 0 {
+		t.Fatal("index.html has no function saveEdit")
+	}
+	body := page[start:]
+	if next := strings.Index(body, "\n      function "); next >= 0 {
+		body = body[:next]
+	}
+
+	if !strings.Contains(body, "loadTodos()") {
+		t.Fatal("saveEdit never reloads the list")
+	}
+	if !strings.Contains(body, "filters.sort") {
+		t.Error("saveEdit reload condition ignores the active sort, so an edit that changes a sort-keyed field leaves the row at its stale position")
+	}
+}
+
 // TestIndexBindsTodoReadKeys checks that every field the page reads from a todo
 // object is a Todo json tag, so a renamed response field fails here instead of
 // rendering blank.

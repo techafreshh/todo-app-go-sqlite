@@ -507,9 +507,11 @@
           })
           .then(function (updated) {
             clearError(source);
-            // An edit can change a filter-keyed field (title or priority), so
-            // reload the filtered list instead of mutating the row in place.
-            if (filtersActive()) {
+            // An edit can change a filter-keyed field (title, priority) or a
+            // sort-keyed one (priority, due date), so reload the list instead
+            // of swapping the row in place, which would leave it at its stale
+            // index under a non-default sort.
+            if (filtersActive() || filters.sort !== "created") {
               return loadTodos();
             }
             replaceRow(updated, item);
