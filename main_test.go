@@ -908,6 +908,21 @@ func TestIndexServesHTML(t *testing.T) {
 	assertSingleSelected(t, parseDataStatus(t, page), `aria-pressed="true"`, defaultStatus, "status")
 }
 
+// The UI is embedded into the binary, so GET / must serve it even when the
+// process runs from a directory with no static/ tree. Regression for the
+// cwd-relative ServeFile that 404'd the UI outside the repo root (issue #22).
+func TestIndexServesHTMLFromAnyWorkingDirectory(t *testing.T) {
+	t.Chdir(t.TempDir())
+	srv := newTestServer(t)
+	resp, page := getIndex(t, srv)
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", ct)
+	}
+	if !strings.Contains(page, "<html") {
+		t.Error("served body is not the UI")
+	}
+}
+
 // getIndex fetches the served page once for the conformance tests that read it
 // as text.
 func getIndex(t *testing.T, srv *httptest.Server) (*http.Response, string) {
