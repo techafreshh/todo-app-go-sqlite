@@ -23,54 +23,50 @@ func TestCIWorkflowContract(t *testing.T) {
 		"go vet ./...",
 		"go test ./...",
 		"go build ./...",
-		"docker build",  // the shipped image builds in CI
-		"pull_request:", // every PR is checked
+		"docker build", // the shipped image builds in CI
 	} {
 		if !strings.Contains(wf, want) {
 			t.Errorf("ci.yml missing required element %q", want)
 		}
 	}
 
-	// The workflow runs on push to main.
-	push := composeBlock(t, composeBlock(t, lines, "on:", 0), "push:", 2)
-	if !containsText(push, "main") {
-		t.Error("ci.yml must run on push to main")
+	// Triggers, as parsed values: the workflow runs on push to main and on
+	// every pull request. Exact lines, not substrings — branches-ignore,
+	// paths filters, or a commented-out trigger must fail this.
+	onBlock := composeBlock(t, lines, "on:", 0)
+	push := composeBlock(t, onBlock, "push:", 2)
+	if !hasExactLine(push, "branches: [main]") {
+		t.Error("ci.yml must run on push to main via an exact 'branches: [main]' entry")
 	}
+	composeBlock(t, onBlock, "pull_request:", 2)
 
-	// No secret access and no template expressions anywhere in the workflow.
-	for _, banned := range []string{"secrets", "${{"} {
+	// No secret access, no template expressions, and no trigger forms that
+	// change what the triggers mean.
+	for _, banned := range []string{"secrets", "${{", "pull_request_target"} {
 		if strings.Contains(wf, banned) {
 			t.Errorf("ci.yml must not contain %q", banned)
 		}
 	}
 
-	// Exactly one permissions block in the whole file — a job-level override is
-	// a second block and the effective token for that job — granting exactly
+	// One permissions declaration in the whole file — the top-level block
+	// header, nothing inline and no job-level override — granting exactly
 	// contents: read.
 	perms := composeBlock(t, lines, "permissions:", 0)
 	if len(perms) != 1 || perms[0].text != "contents: read" {
 		t.Errorf("workflow permissions must grant exactly 'contents: read', got %v", perms)
 	}
-	if n := countHeader(lines, "permissions:"); n != 1 {
-		t.Errorf("ci.yml must declare exactly one permissions block, found %d", n)
+	for _, l := range lines {
+		if strings.HasPrefix(l.text, "permissions:") && l.text != "permissions:" {
+			t.Errorf("ci.yml must not declare an inline or job-level permissions override, found %q", l.text)
+		}
 	}
 }
 
-func containsText(lines []yamlLine, want string) bool {
+func hasExactLine(lines []yamlLine, want string) bool {
 	for _, l := range lines {
-		if strings.Contains(l.text, want) {
+		if l.text == want {
 			return true
 		}
 	}
 	return false
-}
-
-func countHeader(lines []yamlLine, header string) int {
-	n := 0
-	for _, l := range lines {
-		if l.text == header {
-			n++
-		}
-	}
-	return n
 }
