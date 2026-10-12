@@ -682,6 +682,96 @@ func TestListTodosSort(t *testing.T) {
 	}
 }
 
+func TestPriorityDomainConformance(t *testing.T) {
+	t.Run("default is a member of the set", func(t *testing.T) {
+		if !validPriorities[defaultPriority] {
+			t.Errorf("defaultPriority %q is not in validPriorities", defaultPriority)
+		}
+	})
+
+	t.Run("sqlite schema default conforms", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "schema.db")
+		db, err := openDB(dbPath)
+		if err != nil {
+			t.Fatalf("openDB: %v", err)
+		}
+		defer db.Close()
+
+		now := nowTimestamp()
+		if _, err := db.Exec(
+			`INSERT INTO todos (title, created_at, updated_at) VALUES (?, ?, ?)`,
+			"schema default", now, now,
+		); err != nil {
+			t.Fatalf("insert relying on schema default: %v", err)
+		}
+		var priority string
+		if err := db.QueryRow(`SELECT priority FROM todos WHERE title = ?`, "schema default").Scan(&priority); err != nil {
+			t.Fatalf("read back priority: %v", err)
+		}
+		if priority != defaultPriority {
+			t.Errorf("schema default = %q, want defaultPriority %q", priority, defaultPriority)
+		}
+	})
+
+	t.Run("priority sort conforms to the owner order", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "sort.db")
+		db, err := openDB(dbPath)
+		if err != nil {
+			t.Fatalf("openDB: %v", err)
+		}
+		defer db.Close()
+
+		for _, p := range priorities {
+			if _, err := createTodo(db, "todo-"+p, p, nil); err != nil {
+				t.Fatalf("createTodo(%q): %v", p, err)
+			}
+		}
+		todos, err := listTodos(db, listFilter{Sort: "priority"})
+		if err != nil {
+			t.Fatalf("listTodos: %v", err)
+		}
+		got := make([]string, len(todos))
+		for i, todo := range todos {
+			got[i] = todo.Priority
+		}
+		want := slices.Clone(priorities)
+		slices.Reverse(want)
+		if !slices.Equal(got, want) {
+			t.Errorf("priority sort = %v, want most urgent first %v", got, want)
+		}
+	})
+
+	t.Run("validation message names the set in owner order", func(t *testing.T) {
+		want := "priority must be one of " + strings.Join(priorities, ", ")
+		srv := newTestServer(t)
+
+		create := doRequest(t, http.MethodPost, srv.URL+"/api/todos", `{"title":"x","priority":"urgent"}`)
+		if create.StatusCode != http.StatusBadRequest {
+			t.Fatalf("create status = %d, want 400", create.StatusCode)
+		}
+		if got := decodeError(t, create); got != want {
+			t.Errorf("create priority error = %q, want %q", got, want)
+		}
+
+		createTestTodo(t, srv, `{"title":"valid"}`)
+		update := doRequest(t, http.MethodPut, srv.URL+"/api/todos/1", `{"title":"x","priority":"urgent"}`)
+		if update.StatusCode != http.StatusBadRequest {
+			t.Fatalf("update status = %d, want 400", update.StatusCode)
+		}
+		if got := decodeError(t, update); got != want {
+			t.Errorf("update priority error = %q, want %q", got, want)
+		}
+
+		list := doRequest(t, http.MethodGet, srv.URL+"/api/todos?priority=urgent", "")
+		if list.StatusCode != http.StatusBadRequest {
+			t.Fatalf("list status = %d, want 400", list.StatusCode)
+		}
+		if got := decodeError(t, list); got != want {
+			t.Errorf("list priority error = %q, want %q", got, want)
+		}
+	})
+}
+
 func TestListTodosRejectsUnknownValues(t *testing.T) {
 	srv := newTestServer(t)
 	for _, query := range []string{"?status=bogus", "?priority=urgent", "?sort=alpha"} {
@@ -784,6 +874,14 @@ func TestIndexServesHTML(t *testing.T) {
 	assertOptionsMatch(t, parseSelectOptions(t, page, "priority"), validPriorities, "priority")
 	assertOptionsMatch(t, parseSelectOptions(t, page, "filter-priority"), validPriorities, "filter-priority")
 	assertOptionsMatch(t, parseSelectOptions(t, page, "sort"), validSorts, "sort")
+
+	// The owner declares a display order, so the page must present each priority
+	// in that order rather than merely offering the same set.
+	for _, id := range []string{"priority", "filter-priority"} {
+		if got := selectOptionSequence(t, page, id); !slices.Equal(got, priorities) {
+			t.Errorf("index.html select %q option order = %v, want owner order %v", id, got, priorities)
+		}
+	}
 
 	for _, param := range []string{paramStatus, paramQuery, paramPriority, paramSort} {
 		if !strings.Contains(page, "params.set(\""+param+"\"") {
@@ -981,6 +1079,28 @@ func parseSelectOptions(t *testing.T, page, id string) map[string]string {
 		t.Fatalf("index.html select id=%q contains no options", id)
 	}
 	return options
+}
+
+// selectOptionSequence returns the <option value="..."> values inside the select
+// with the given id, in document order. The empty "any" sentinel of a filter is
+// skipped because it is not a value the server accepts.
+func selectOptionSequence(t *testing.T, page, id string) []string {
+	t.Helper()
+	selectRe := regexp.MustCompile(`(?s)<select id="` + id + `"[^>]*>(.*?)</select>`)
+	m := selectRe.FindStringSubmatch(page)
+	if m == nil {
+		t.Fatalf("index.html contains no select id=%q", id)
+	}
+	var values []string
+	for _, om := range regexp.MustCompile(`<option value="([^"]*)"`).FindAllStringSubmatch(m[1], -1) {
+		if om[1] != "" {
+			values = append(values, om[1])
+		}
+	}
+	if len(values) == 0 {
+		t.Fatalf("index.html select id=%q contains no options", id)
+	}
+	return values
 }
 
 // assertOptionsMatch checks that a select's offered values are exactly the

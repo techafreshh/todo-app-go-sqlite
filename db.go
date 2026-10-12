@@ -138,10 +138,24 @@ func orderByClause(sort string) string {
 	case "due":
 		return "due_date IS NULL, due_date, id"
 	case "priority":
-		return "CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END, id"
+		return priorityOrderClause() + ", id"
 	default:
 		return "created_at, id"
 	}
+}
+
+// priorityOrderClause renders the ORDER BY CASE that ranks the most urgent
+// priority first, built from the priorities owner so the SQL sort rank cannot
+// drift from the validated set. The interpolated priorities are compile-time
+// constants, never user input.
+func priorityOrderClause() string {
+	var b strings.Builder
+	b.WriteString("CASE priority")
+	for i, p := range priorities {
+		fmt.Fprintf(&b, " WHEN '%s' THEN %d", p, len(priorities)-1-i)
+	}
+	fmt.Fprintf(&b, " ELSE %d END", len(priorities))
+	return b.String()
 }
 
 // escapeLike quotes the LIKE metacharacters so a query matches the literal text
