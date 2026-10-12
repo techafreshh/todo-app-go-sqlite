@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1113,8 +1114,13 @@ func TestIndexBindsRequestPayloads(t *testing.T) {
 // An inline edit can change a sort-keyed field (priority, due date), so under a
 // non-default sort the row must be re-rendered from the server's order rather
 // than swapped in place, which would leave it at its stale index (issue #24).
-// The edit flow reloads the list when a filter is active or the sort differs
-// from the default; this guards that the sort axis stays in that condition.
+// The reload guard must be exactly "a filter is active or the sort differs from
+// the server default": with a non-default sort and no filter filtersActive() is
+// false, so a bare filters.sort reference (or an &&/=== mutation of this guard)
+// falls through to replaceRow and leaves the row stale. Asserting the whole
+// expression, not the token, is what makes those mutations fail here. The
+// default is bound to the server's defaultSort so the hand-synced client
+// literal cannot drift from the owner.
 func TestIndexEditReloadsUnderActiveSort(t *testing.T) {
 	srv := newTestServer(t)
 	_, page := getIndex(t, srv)
@@ -1128,11 +1134,12 @@ func TestIndexEditReloadsUnderActiveSort(t *testing.T) {
 		body = body[:next]
 	}
 
-	if !strings.Contains(body, "loadTodos()") {
-		t.Fatal("saveEdit never reloads the list")
+	want := `if (filtersActive() || filters.sort !== ` + strconv.Quote(defaultSort) + `)`
+	if !strings.Contains(body, want) {
+		t.Errorf("saveEdit reload guard is not %s, so an edit that changes a sort-keyed field can leave the row at its stale position", want)
 	}
-	if !strings.Contains(body, "filters.sort") {
-		t.Error("saveEdit reload condition ignores the active sort, so an edit that changes a sort-keyed field leaves the row at its stale position")
+	if !strings.Contains(body, "loadTodos()") {
+		t.Error("saveEdit reload branch never reloads the list")
 	}
 }
 
