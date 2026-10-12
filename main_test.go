@@ -682,6 +682,66 @@ func TestListTodosSort(t *testing.T) {
 	}
 }
 
+func TestPriorityDomainConformance(t *testing.T) {
+	t.Run("default is a member of the set", func(t *testing.T) {
+		if !validPriorities[defaultPriority] {
+			t.Errorf("defaultPriority %q is not in validPriorities", defaultPriority)
+		}
+	})
+
+	t.Run("sqlite schema default conforms", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "schema.db")
+		db, err := openDB(dbPath)
+		if err != nil {
+			t.Fatalf("openDB: %v", err)
+		}
+		defer db.Close()
+
+		now := nowTimestamp()
+		if _, err := db.Exec(
+			`INSERT INTO todos (title, created_at, updated_at) VALUES (?, ?, ?)`,
+			"schema default", now, now,
+		); err != nil {
+			t.Fatalf("insert relying on schema default: %v", err)
+		}
+		var priority string
+		if err := db.QueryRow(`SELECT priority FROM todos WHERE title = ?`, "schema default").Scan(&priority); err != nil {
+			t.Fatalf("read back priority: %v", err)
+		}
+		if priority != defaultPriority {
+			t.Errorf("schema default = %q, want defaultPriority %q", priority, defaultPriority)
+		}
+	})
+
+	t.Run("priority sort conforms to the owner order", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "sort.db")
+		db, err := openDB(dbPath)
+		if err != nil {
+			t.Fatalf("openDB: %v", err)
+		}
+		defer db.Close()
+
+		for _, p := range priorities {
+			if _, err := createTodo(db, "todo-"+p, p, nil); err != nil {
+				t.Fatalf("createTodo(%q): %v", p, err)
+			}
+		}
+		todos, err := listTodos(db, listFilter{Sort: "priority"})
+		if err != nil {
+			t.Fatalf("listTodos: %v", err)
+		}
+		got := make([]string, len(todos))
+		for i, todo := range todos {
+			got[i] = todo.Priority
+		}
+		want := slices.Clone(priorities)
+		slices.Reverse(want)
+		if !slices.Equal(got, want) {
+			t.Errorf("priority sort = %v, want most urgent first %v", got, want)
+		}
+	})
+}
+
 func TestListTodosRejectsUnknownValues(t *testing.T) {
 	srv := newTestServer(t)
 	for _, query := range []string{"?status=bogus", "?priority=urgent", "?sort=alpha"} {

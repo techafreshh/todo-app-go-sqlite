@@ -43,10 +43,20 @@ const (
 	paramQuery    = "q"
 )
 
-var validPriorities = map[string]bool{
-	"low":           true,
-	defaultPriority: true,
-	"high":          true,
+// priorities is the single owner of the priority set and its display order
+// (least to most urgent). Membership, the validation messages, and the SQL sort
+// rank all derive from it; the client copies and the schema default are bound to
+// it by tests.
+var priorities = []string{"low", "medium", "high"}
+
+var validPriorities = prioritySet(priorities)
+
+func prioritySet(ordered []string) map[string]bool {
+	set := make(map[string]bool, len(ordered))
+	for _, p := range ordered {
+		set[p] = true
+	}
+	return set
 }
 
 var validStatuses = map[string]bool{
@@ -162,7 +172,7 @@ func validateTodo(title, priority string, dueDate *string) (string, string, *str
 		priority = defaultPriority
 	}
 	if !validPriorities[priority] {
-		return "", "", nil, errors.New("priority must be one of low, medium, high")
+		return "", "", nil, errors.New("priority must be one of " + strings.Join(priorities, ", "))
 	}
 
 	var normalizedDueDate *string
@@ -214,7 +224,7 @@ func parseListFilter(r *http.Request) (listFilter, error) {
 	}
 	if v := q.Get(paramPriority); v != "" {
 		if !validPriorities[v] {
-			return listFilter{}, errors.New("priority must be one of low, medium, high")
+			return listFilter{}, errors.New("priority must be one of " + strings.Join(priorities, ", "))
 		}
 		filter.Priority = v
 	}
