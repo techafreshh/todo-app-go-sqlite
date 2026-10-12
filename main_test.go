@@ -1075,8 +1075,10 @@ func TestIndexBindsClientRoutes(t *testing.T) {
 }
 
 // TestIndexBindsRequestPayloads binds each request flow's body keys to its own
-// request struct, so a key dropped from one flow cannot hide behind another
-// flow that still sends it.
+// request struct in both directions: a key dropped from one flow cannot hide
+// behind another flow that still sends it, and a key the client declares that
+// the server does not own is caught instead of being silently dropped by the
+// decoder.
 func TestIndexBindsRequestPayloads(t *testing.T) {
 	srv := newTestServer(t)
 	_, page := getIndex(t, srv)
@@ -1092,9 +1094,16 @@ func TestIndexBindsRequestPayloads(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			keys := payloadKeysBefore(t, page, tc.anchor)
+			serverTags := map[string]bool{}
 			for _, tag := range jsonTags(t, tc.sample) {
+				serverTags[tag] = true
 				if !keys[tag] {
 					t.Errorf("index.html %s payload missing %T key %q", tc.name, tc.sample, tag)
+				}
+			}
+			for key := range keys {
+				if !serverTags[key] {
+					t.Errorf("index.html %s payload declares %q, not a %T json tag", tc.name, key, tc.sample)
 				}
 			}
 		})
