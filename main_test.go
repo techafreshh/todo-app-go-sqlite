@@ -3,8 +3,11 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -911,6 +914,9 @@ func TestIndexServesHTML(t *testing.T) {
 // The UI is embedded into the binary, so GET / must serve it even when the
 // process runs from a directory with no static/ tree. Regression for the
 // cwd-relative ServeFile that 404'd the UI outside the repo root (issue #22).
+// This is the fast in-process guard; TestBinaryServesHTMLFromAnyWorkingDirectory
+// proves the same outcome against the built artifact, which is the only way to
+// catch a read that resolves before this test's t.Chdir can take effect.
 func TestIndexServesHTMLFromAnyWorkingDirectory(t *testing.T) {
 	t.Chdir(t.TempDir())
 	srv := newTestServer(t)
@@ -921,6 +927,102 @@ func TestIndexServesHTMLFromAnyWorkingDirectory(t *testing.T) {
 	if !strings.Contains(page, "<html") {
 		t.Error("served body is not the UI")
 	}
+}
+
+// TestBinaryServesHTMLFromAnyWorkingDirectory builds the server and runs the
+// built artifact from an unrelated cwd, then asserts GET / serves the UI. It
+// exists because an in-process test cannot observe a cwd-dependent asset read
+// that resolves before the test changes cwd (at package init, or a cached first
+// request populated by an earlier test), which is exactly how the issue-#22
+// regression would pass the suite while the shipped binary serves no UI.
+func TestBinaryServesHTMLFromAnyWorkingDirectory(t *testing.T) {
+	bin := buildServerBinary(t)
+	port := freePort(t)
+
+	cmd := exec.Command(bin)
+	cmd.Dir = t.TempDir()
+	cmd.Env = append(os.Environ(),
+		envPort+"="+port,
+		envDBPath+"="+filepath.Join(t.TempDir(), "todos.db"),
+	)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() {
+		cmd.Process.Kill()
+		cmd.Wait()
+	})
+
+	base := "http://127.0.0.1:" + port
+	waitForHealthz(t, base, &stderr)
+
+	resp, err := http.Get(base + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (server stderr: %s)", resp.StatusCode, stderr.String())
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", ct)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !strings.Contains(string(body), "<html") {
+		t.Errorf("served body is not the UI (%d bytes)", len(body))
+	}
+}
+
+// buildServerBinary compiles the package under test into a temp dir and returns
+// the binary path. go test runs in the package source dir, so "." is the module.
+func buildServerBinary(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "server")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+	return bin
+}
+
+// freePort asks the kernel for an unused port and releases it for the server to
+// bind. The gap between release and bind is small; a lost race surfaces as a
+// healthz timeout with the server's stderr rather than a silent pass.
+func freePort(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	defer l.Close()
+	_, port, err := net.SplitHostPort(l.Addr().String())
+	if err != nil {
+		t.Fatalf("split listen address: %v", err)
+	}
+	return port
+}
+
+// waitForHealthz polls until the server answers /healthz or the deadline passes,
+// reporting the server's stderr on failure so a crash is distinguishable from a
+// timeout.
+func waitForHealthz(t *testing.T, base string, stderr *strings.Builder) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(base + "/healthz")
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("server did not become healthy at %s (server stderr: %s)", base, stderr.String())
 }
 
 // getIndex fetches the served page once for the conformance tests that read it
