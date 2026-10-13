@@ -912,6 +912,133 @@ func TestIndexServesHTML(t *testing.T) {
 	assertSingleSelected(t, parseDataStatus(t, page), `aria-pressed="true"`, defaultStatus, "status")
 }
 
+// TestIndexThemeConformance binds the dark-mode seam. The light tokens must
+// stay verbatim (the "exactly today's light appearance" criterion), the dark
+// block must exist with color-scheme on both, no hex literal may remain
+// outside the two token blocks, the theme-resolving script must sit in <head>
+// so first paint cannot flash, and the header toggle must announce its state
+// via aria-pressed.
+func TestIndexThemeConformance(t *testing.T) {
+	srv := newTestServer(t)
+	_, page := getIndex(t, srv)
+
+	styleAt := strings.Index(page, "<style>")
+	styleEnd := strings.Index(page, "</style>")
+	if styleAt < 0 || styleEnd < 0 || styleAt > styleEnd {
+		t.Fatal("index.html has no <style> block")
+	}
+	style := page[styleAt:styleEnd]
+
+	lightStart := strings.Index(style, ":root {")
+	darkStart := strings.Index(style, `:root[data-theme="dark"] {`)
+	if lightStart < 0 {
+		t.Fatal("index.html style has no :root block")
+	}
+	if darkStart < 0 {
+		t.Fatal("index.html style has no dark token block")
+	}
+	light, dark := cssBlock(t, style[lightStart:]), cssBlock(t, style[darkStart:])
+
+	for _, want := range []string{
+		"--bg: #f5f5f4",
+		"--card: #ffffff",
+		"--ink: #1c1917",
+		"--muted: #78716c",
+		"--line: #e7e5e4",
+		"--accent: #2563eb",
+		"--danger: #b91c1c",
+	} {
+		if !strings.Contains(light, want) {
+			t.Errorf("light :root block changed %q; the light appearance must stay exactly as before dark mode", want)
+		}
+	}
+	for name, block := range map[string]string{"light": light, "dark": dark} {
+		if !strings.Contains(block, "color-scheme:") {
+			t.Errorf("%s token block does not declare color-scheme, so native controls would not follow the theme", name)
+		}
+	}
+
+	// Custom properties inherit, so a token the light block declares but the
+	// dark block omits would silently keep its light value in dark mode. The
+	// dark block is hand-maintained, so bind the two name sets to each other.
+	tokenNameRe := regexp.MustCompile(`--[a-z][a-z0-9-]*`)
+	lightNames := map[string]bool{}
+	for _, name := range tokenNameRe.FindAllString(light, -1) {
+		lightNames[name] = true
+	}
+	darkNames := map[string]bool{}
+	for _, name := range tokenNameRe.FindAllString(dark, -1) {
+		darkNames[name] = true
+	}
+	for name := range lightNames {
+		if !darkNames[name] {
+			t.Errorf("dark token block is missing %q; it would silently keep its light value in dark mode", name)
+		}
+	}
+	for name := range darkNames {
+		if !lightNames[name] {
+			t.Errorf("dark token block declares %q, which the light block does not define", name)
+		}
+	}
+
+	// Everything between and after the two token blocks must route colors
+	// through var(); a stray hex literal re-introduces a color dark mode
+	// cannot restyle.
+	outside := style[:lightStart] + style[lightStart+len(light):darkStart] + style[darkStart+len(dark):]
+	if hex := regexp.MustCompile(`#[0-9a-fA-F]{3,8}`).FindAllString(outside, -1); len(hex) > 0 {
+		t.Errorf("index.html style has hardcoded hex outside the token blocks: %v", hex)
+	}
+
+	headEnd := strings.Index(page, "</head>")
+	if headEnd < 0 {
+		t.Fatal("index.html has no </head>")
+	}
+	head := page[:headEnd]
+	for _, want := range []string{"localStorage", "prefers-color-scheme", `setAttribute("data-theme"`} {
+		if !strings.Contains(head, want) {
+			t.Errorf("index.html <head> lacks %q; without a head-time theme resolution the first paint can flash the wrong theme", want)
+		}
+	}
+
+	// The persisted theme record is declared twice by hand: the head script
+	// reads the key, the toggle writes it. A one-sided rename or a dropped
+	// write would leave the toggle working live while every reload silently
+	// reverts to the OS theme, so bind the two key literals to each other.
+	reader := regexp.MustCompile(`localStorage\.getItem\("([^"]+)"\)`).FindStringSubmatch(head)
+	if reader == nil {
+		t.Fatal("index.html head script never reads the stored theme")
+	}
+	writer := regexp.MustCompile(`localStorage\.setItem\("([^"]+)"`).FindStringSubmatch(page)
+	if writer == nil {
+		t.Fatal("index.html toggle never persists the theme choice")
+	}
+	if reader[1] != writer[1] {
+		t.Errorf("theme storage key mismatch: head script reads %q, toggle writes %q; the stored choice would be silently ignored", reader[1], writer[1])
+	}
+
+	toggleRe := regexp.MustCompile(`<button[^>]*id="theme-toggle"[^>]*>`)
+	toggle := toggleRe.FindString(page)
+	if toggle == "" {
+		t.Fatal("index.html has no theme-toggle button")
+	}
+	if !strings.Contains(toggle, `class="theme-toggle"`) || !strings.Contains(toggle, "aria-pressed") {
+		t.Errorf("theme-toggle button %q lacks the theme-toggle class or an aria-pressed state announcement", toggle)
+	}
+}
+
+// cssBlock returns the declaration block starting at the given offset: the
+// text from the opening brace through its matching closing brace. Token blocks
+// contain no nested braces, so the first closing brace ends the block.
+func cssBlock(t *testing.T, from string) string {
+	t.Helper()
+	open := strings.Index(from, "{")
+	close := strings.Index(from, "}")
+	if open < 0 || close < 0 || close < open {
+		t.Fatalf("token block %q has no balanced braces", from)
+	}
+	return from[:close+1]
+}
+
 // The UI is embedded into the binary, so GET / must serve it even when the
 // process runs from a directory with no static/ tree. Regression for the
 // cwd-relative ServeFile that 404'd the UI outside the repo root (issue #22).
