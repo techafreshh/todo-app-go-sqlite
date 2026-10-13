@@ -958,6 +958,29 @@ func TestIndexThemeConformance(t *testing.T) {
 		}
 	}
 
+	// Custom properties inherit, so a token the light block declares but the
+	// dark block omits would silently keep its light value in dark mode. The
+	// dark block is hand-maintained, so bind the two name sets to each other.
+	tokenNameRe := regexp.MustCompile(`--[a-z][a-z0-9-]*`)
+	lightNames := map[string]bool{}
+	for _, name := range tokenNameRe.FindAllString(light, -1) {
+		lightNames[name] = true
+	}
+	darkNames := map[string]bool{}
+	for _, name := range tokenNameRe.FindAllString(dark, -1) {
+		darkNames[name] = true
+	}
+	for name := range lightNames {
+		if !darkNames[name] {
+			t.Errorf("dark token block is missing %q; it would silently keep its light value in dark mode", name)
+		}
+	}
+	for name := range darkNames {
+		if !lightNames[name] {
+			t.Errorf("dark token block declares %q, which the light block does not define", name)
+		}
+	}
+
 	// Everything between and after the two token blocks must route colors
 	// through var(); a stray hex literal re-introduces a color dark mode
 	// cannot restyle.
@@ -975,6 +998,22 @@ func TestIndexThemeConformance(t *testing.T) {
 		if !strings.Contains(head, want) {
 			t.Errorf("index.html <head> lacks %q; without a head-time theme resolution the first paint can flash the wrong theme", want)
 		}
+	}
+
+	// The persisted theme record is declared twice by hand: the head script
+	// reads the key, the toggle writes it. A one-sided rename or a dropped
+	// write would leave the toggle working live while every reload silently
+	// reverts to the OS theme, so bind the two key literals to each other.
+	reader := regexp.MustCompile(`localStorage\.getItem\("([^"]+)"\)`).FindStringSubmatch(head)
+	if reader == nil {
+		t.Fatal("index.html head script never reads the stored theme")
+	}
+	writer := regexp.MustCompile(`localStorage\.setItem\("([^"]+)"`).FindStringSubmatch(page)
+	if writer == nil {
+		t.Fatal("index.html toggle never persists the theme choice")
+	}
+	if reader[1] != writer[1] {
+		t.Errorf("theme storage key mismatch: head script reads %q, toggle writes %q; the stored choice would be silently ignored", reader[1], writer[1])
 	}
 
 	toggleRe := regexp.MustCompile(`<button[^>]*id="theme-toggle"[^>]*>`)
