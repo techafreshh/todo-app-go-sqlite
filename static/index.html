@@ -6,6 +6,7 @@
   <title>Todo</title>
   <style>
     :root {
+      color-scheme: light;
       --bg: #f5f5f4;
       --card: #ffffff;
       --ink: #1c1917;
@@ -13,6 +14,34 @@
       --line: #e7e5e4;
       --accent: #2563eb;
       --danger: #b91c1c;
+      --on-accent: #ffffff;
+      --error-bg: #fef2f2;
+      --error-border: #fecaca;
+      --badge-low-bg: #e0f2fe;
+      --badge-low-ink: #075985;
+      --badge-medium-bg: #fef3c7;
+      --badge-medium-ink: #92400e;
+      --badge-high-bg: #fee2e2;
+      --badge-high-ink: #991b1b;
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #1c1917;
+      --card: #292524;
+      --ink: #e7e5e4;
+      --muted: #a8a29e;
+      --line: #78716c;
+      --accent: #60a5fa;
+      --danger: #f87171;
+      --on-accent: #1c1917;
+      --error-bg: #450a0a;
+      --error-border: #7f1d1d;
+      --badge-low-bg: #0c4a6e;
+      --badge-low-ink: #bae6fd;
+      --badge-medium-bg: #78350f;
+      --badge-medium-ink: #fde68a;
+      --badge-high-bg: #7f1d1d;
+      --badge-high-ink: #fecaca;
     }
     * { box-sizing: border-box; }
     body {
@@ -28,8 +57,14 @@
       margin: 0 auto;
     }
     h1 {
-      margin: 0 0 1rem;
+      margin: 0;
       font-size: 1.5rem;
+    }
+    .site-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
     }
     form {
       display: flex;
@@ -64,7 +99,7 @@
       flex: 0 0 auto;
       border-color: var(--accent);
       background: var(--accent);
-      color: #ffffff;
+      color: var(--on-accent);
       cursor: pointer;
     }
     button:hover { filter: brightness(1.05); }
@@ -76,8 +111,8 @@
     .validation { color: var(--danger); }
     .error {
       padding: 0.6rem 0.75rem;
-      background: #fef2f2;
-      border: 1px solid #fecaca;
+      background: var(--error-bg);
+      border: 1px solid var(--error-border);
       border-radius: 0.375rem;
       color: var(--danger);
     }
@@ -123,12 +158,12 @@
       text-transform: uppercase;
       letter-spacing: 0.03em;
     }
-    .badge-low { background: #e0f2fe; color: #075985; }
-    .badge-medium { background: #fef3c7; color: #92400e; }
-    .badge-high { background: #fee2e2; color: #991b1b; }
+    .badge-low { background: var(--badge-low-bg); color: var(--badge-low-ink); }
+    .badge-medium { background: var(--badge-medium-bg); color: var(--badge-medium-ink); }
+    .badge-high { background: var(--badge-high-bg); color: var(--badge-high-ink); }
     .due { flex: 0 0 auto; font-size: 0.8rem; color: var(--muted); }
-    .due-overdue { background: #fee2e2; color: #991b1b; }
-    .due-today { background: #fef3c7; color: #92400e; }
+    .due-overdue { background: var(--badge-high-bg); color: var(--badge-high-ink); }
+    .due-today { background: var(--badge-medium-bg); color: var(--badge-medium-ink); }
     .todo-edit {
       flex: 0 0 auto;
       padding: 0.3rem 0.6rem;
@@ -147,7 +182,7 @@
     .todo-edit-save {
       border-color: var(--accent);
       background: var(--accent);
-      color: #ffffff;
+      color: var(--on-accent);
     }
     .todo-edit-cancel {
       border-color: var(--line);
@@ -195,13 +230,42 @@
     .segment.active,
     .segment.active:hover {
       background: var(--accent);
-      color: #ffffff;
+      color: var(--on-accent);
     }
+    .theme-toggle {
+      flex: 0 0 auto;
+      padding: 0.3rem 0.6rem;
+      border-color: var(--line);
+      background: transparent;
+      color: var(--ink);
+    }
+    .theme-toggle:hover { border-color: var(--muted); filter: none; }
   </style>
+  <script>
+    // Resolves the theme before first paint: a stored choice wins; otherwise
+    // the OS preference decides, and light is the fallback. The attribute must
+    // be set here, not in the body script, or an explicit light choice over a
+    // dark OS would flash dark.
+    (function () {
+      var theme = null;
+      try {
+        theme = localStorage.getItem("todo-theme");
+      } catch (err) {}
+      if (theme !== "light" && theme !== "dark") {
+        theme = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+          ? "dark"
+          : "light";
+      }
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
 </head>
 <body>
   <main>
-    <h1>Todo</h1>
+    <header class="site-header">
+      <h1>Todo</h1>
+      <button type="button" id="theme-toggle" class="theme-toggle" aria-pressed="false">Dark</button>
+    </header>
 
     <p id="error" class="error" role="alert" hidden></p>
 
@@ -283,6 +347,7 @@
       var searchInput = document.getElementById("search");
       var filterPrioritySelect = document.getElementById("filter-priority");
       var sortSelect = document.getElementById("sort");
+      var themeToggle = document.getElementById("theme-toggle");
 
       var SEARCH_DEBOUNCE_MS = 200;
 
@@ -709,6 +774,28 @@
           loadTodos();
         }, SEARCH_DEBOUNCE_MS);
       });
+
+      // The head script has already resolved the theme, so the active one is
+      // always readable off data-theme; a click stores the flipped value as an
+      // explicit choice, which then overrides the OS preference on reload.
+      function activeTheme() {
+        return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+      }
+
+      function syncThemeToggle() {
+        themeToggle.setAttribute("aria-pressed", activeTheme() === "dark" ? "true" : "false");
+      }
+
+      themeToggle.addEventListener("click", function () {
+        var next = activeTheme() === "dark" ? "light" : "dark";
+        document.documentElement.setAttribute("data-theme", next);
+        try {
+          localStorage.setItem("todo-theme", next);
+        } catch (err) {}
+        syncThemeToggle();
+      });
+
+      syncThemeToggle();
 
       loadTodos();
     })();
